@@ -1,0 +1,10 @@
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[workspace]
+members = [
+    "boot/stage1",
+    "shared/core_reqs",
+    "shared/display",
+    "shared/xenon-enet",
+]
+
