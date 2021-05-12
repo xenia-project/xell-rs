@@ -1,5 +1,7 @@
 //! Requirements for Rust libcore. These are just basic libc `mem*()` routines
 //! as well as some intrinsics to get access to 64-bit integers in 32-bit land
+//!
+//! This code is from [chocolate milk](https://github.com/gamozolabs/chocolate_milk/blob/643f47b901ceda1f688d3c20ff92b0f41af80251/shared/core_reqs/src/lib.rs).
 
 #![feature(global_asm, llvm_asm)]
 
