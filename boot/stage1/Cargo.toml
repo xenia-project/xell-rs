@@ -7,8 +7,13 @@ edition = "2018"
 
 [dependencies]
 core_reqs = { path = "../../shared/core_reqs" }
+xenon-cpu = { path = "../../shared/xenon-cpu" }
+
+[profile.dev]
+panic = "abort"
 
 [profile.release]
+panic = "abort"
 opt-level = "s"
 lto = true
 

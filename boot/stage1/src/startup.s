@@ -4,6 +4,7 @@
 #define ctrlrd		136		
 #define ctrlwr		152
 #define pvr     	287
+#define sprg0       272
 #define hsprg0		304
 #define hsprg1		305
 #define hdsisr		306
@@ -124,60 +125,25 @@ start_common:
 	mtspr	lpcr, %r10
 	isync
 
-	// set stack
-	// R1 = 0x80000000_1E000000
-	li	%r1, 0
-	oris	%r1, %r1, 0x8000
-	rldicr	%r1, %r1, 32,31
-	oris	%r1, %r1, 0x1e00
-	
-1:
-	slwi	%r3, %r3, 16  		 // 64k stack per thread
-	sub		%r1, %r1, %r3
-	subi	%r1, %r1, 0x80
-
 	// lis	%r3, 0x8000
 	// rldicr  %r3, %r3, 32,31
 	// oris	%r3, %r3, start@high
 	// ori	%r3, %r3, start@l
 	// ld	%r2, 8(%r3)
 
-    // Set the high bit for PC.
-    bl      1f
-1:
-    mflr    %r10
-
-    lis	    %r3, 0x8000
-    sldi	%r3, %r3, 32
-    or      %r3, %r3, %r10
-    addi    %r3, %r3, (1f - 1b)
-    mtctr   %r3
-    bctr
-
-1:
+	bl 	branch_high
     bl  load_toc
+
+	mfspr	%r3, pir
+	bl 	load_stack
 
 	mfspr	%r3, pir
 	cmplwi	%r3, 0
 	bne		1f
 
-	// Initialize BSS.
-	ld		%r10, __bss_start@got(%r2)
-	ld		%r11, __bss_end@got(%r2)
-	sub		%r11, %r11, %r10
-	srdi	%r11, %r11, 2
-	subi	%r10, %r10, 1
-	cmplwi	%r11, 0
-	beq		1f
+	// Initialize BSS on processor 0 only.
+	bl	init_bss
 
-	mtctr	%r11
-	li		%r11, 0
-
-.bss_loop:
-	stwu	%r11, 4(%r10)
-	bdnz	.bss_loop
-
-1:
 	// Relocate startup source.
 	mr		%r6, %r4
 
@@ -185,11 +151,7 @@ start_common:
 	mfspr	%r4, hrmor
 	mfpvr	%r5
 
-	// Branch to start_rust via 64-bit ELF ABI.
-	ld		%r0, __start_rust@got(%r2)
-	ld		%r0, 0(%r0)
-	mtctr	%r0
-	bctrl
+	bl 		__start_rust
 	nop
 
 	b	.
@@ -295,6 +257,57 @@ init_regs:
 	sync
 	isync
 
+	blr
+
+// Initialize BSS
+// R10 = clobber
+// R11 = clobber
+// CTR = clobber
+init_bss:
+	ld		%r10, __bss_start@got(%r2)
+	ld		%r11, __bss_end@got(%r2)
+	sub		%r11, %r11, %r10
+	srdi	%r11, %r11, 2
+	subi	%r10, %r10, 1
+	cmplwi	%r11, 0
+	beq		1f
+
+	mtctr	%r11
+	li		%r11, 0
+
+.bss_loop:
+	stwu	%r11, 4(%r10)
+	bdnz	.bss_loop
+
+1:
+	blr
+
+// Sets the high bit in PC.
+// R3 = clobber
+// R10 = clobber
+branch_high:
+    mflr    %r10
+
+    lis	    %r3, 0x8000
+    sldi	%r3, %r3, 32
+    or      %r3, %r3, %r10
+
+	mtlr	%r3
+	blr
+
+// Sets up the stack.
+// R1(out) = stack
+// R3(in/out) = pir / clobber
+load_stack:
+	// set stack
+	// R1 = 0x80000000_1E000000
+	lis		%r1, 0x8000
+	rldicr	%r1, %r1, 32,31
+	oris	%r1, %r1, 0x1e00
+	
+	slwi	%r3, %r3, 16  		 // 64k stack per thread
+	sub		%r1, %r1, %r3
+	subi	%r1, %r1, 0x80
 	blr
 
 // Loads the table of contents pointer into R2.

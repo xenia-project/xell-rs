@@ -9,13 +9,16 @@
 #![no_std]
 #![no_main]
 
-use core::{sync::atomic::{AtomicU32, AtomicUsize, Ordering}};
+use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
 global_asm!(include_str!("startup.s"));
 
 extern crate core_reqs;
 
+mod except;
+mod iic;
 mod panic;
+mod smc;
 
 extern "C" {
     fn start_from_libxenon() -> !;
@@ -65,6 +68,8 @@ const fn make_reljump(address: usize, target: usize) -> u32 {
 #[no_mangle]
 #[link_section = ".text.startup"]
 pub extern "C" fn __start_rust(pir: u32, _hrmor: u32, _pvr: u32, src: u32) -> ! {
+    unsafe { smc::set_led(1, 0xF0); }
+
     PROCESSORS.fetch_or(1 << pir, Ordering::Relaxed);
     if pir != 0 {
         loop {
@@ -91,7 +96,11 @@ pub extern "C" fn __start_rust(pir: u32, _hrmor: u32, _pvr: u32, src: u32) -> ! 
                 let jmpbuf = make_longjmp(start_from_libxenon as usize);
 
                 // Copy the jump buffer to some unused bytes at the beginning of the hypervisor.
-                core::ptr::copy_nonoverlapping(jmpbuf.as_ptr(), 0x000000A0 as *mut u32, jmpbuf.len());
+                core::ptr::copy_nonoverlapping(
+                    jmpbuf.as_ptr(),
+                    0x000000A0 as *mut u32,
+                    jmpbuf.len(),
+                );
 
                 // Ensure the compiler does not reorder instructions.
                 core::sync::atomic::compiler_fence(Ordering::SeqCst);
@@ -115,15 +124,20 @@ pub extern "C" fn __start_rust(pir: u32, _hrmor: u32, _pvr: u32, src: u32) -> ! 
             };
 
             // Loop...
-            while PROCESSORS.load(Ordering::Relaxed) != 0x3F {}
+            while PROCESSORS.load(Ordering::Relaxed) != 0x3F {
+                unsafe { smc::set_led(1, PROCESSORS.load(Ordering::Relaxed) as u8); }
+            }
         }
 
         // Shouldn't hit this case.
-        _ => loop {}
+        _ => loop {},
     }
 
     // Now the system is in a defined state. All secondary processors are captured,
     // and we are free to modify the system.
+    unsafe { except::init_except() };
+
+    unsafe { smc::set_led(1, 0xF0) };
 
     loop {}
 }

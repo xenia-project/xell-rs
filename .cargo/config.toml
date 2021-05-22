@@ -2,10 +2,11 @@
 [build]
 target = "powerpc64-unknown-linux-gnu"
 
-[profile]
+[profile.release]
 incremental = false
 opt-level = "z"
 lto = true
 
 [target.powerpc64-unknown-linux-gnu]
 linker = "rust-lld"
+rustflags = ["-C", "relocation-model=static"]
