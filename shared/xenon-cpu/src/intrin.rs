@@ -17,3 +17,40 @@ pub fn pir() -> u64 {
 
     pir
 }
+
+#[inline]
+pub fn mfmsr() -> u64 {
+    let msr;
+    unsafe {
+        asm!("mfmsr {}", out(reg) msr);
+    }
+
+    msr
+}
+
+#[macro_export]
+macro_rules! mtspr {
+    ($spr:literal, $val:expr) => {
+        asm!(
+            "mtspr {spr}, {0}",
+            in(reg_nonzero) $val,
+            spr = const $spr,
+        )
+    };
+}
+
+#[macro_export]
+macro_rules! mfspr {
+    ($spr:literal) => {
+        {
+            let mut val = 0u64;
+            asm!(
+                "mfspr {0}, {spr}",
+                out(reg_nonzero) val,
+                spr = const $spr,
+            );
+
+            val
+        }
+    };
+}

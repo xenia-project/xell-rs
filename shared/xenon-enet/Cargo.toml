@@ -7,3 +7,6 @@ edition = "2018"
 
 [dependencies]
 smoltcp = "0.7.1"
+volatile = "0.4.4"
+
+xenon-cpu = { path = "../xenon-cpu" }

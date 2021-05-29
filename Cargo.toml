@@ -4,8 +4,7 @@
 members = [
     "boot/stage1",
     "shared/core_reqs",
-    "shared/display",
     "shared/xenon-cpu",
-    "shared/xenon-enet",
+#    "shared/xenon-enet",
 ]
 

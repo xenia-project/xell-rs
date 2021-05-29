@@ -89,10 +89,13 @@ start_from_rom:
 // R1 = stack
 // R2 = TOC
 // R3 = clobber
-// R4 = startup source
+// R4(store R30) = startup source
 // R10 = clobber
 // R11 = clobber
+// R30 = clobber
 start_common:
+	mr		%r30, %r4			// Relocate startup source.
+	mfspr   %r29, 318			// LPCR
 
 	// disable interrupts (but enable vector available, gcc likes to use VMX
 	// for memset)
@@ -101,7 +104,7 @@ start_common:
 
 	li		%r3, 2
 	isync
-	mtspr	lpcr, %r3            // LPCR[RMI] = 1 (Real-Mode cache inhibited)
+	mtspr	318, %r3            // LPCR[RMI] = 1 (Real-Mode cache inhibited)
 	isync
 	li      %r3, 0x3FF
 	rldicr  %r3, %r3, 32,31
@@ -109,88 +112,47 @@ start_common:
 	sync
 	isync
 
-	mfspr	%r10, hid1
+	mfspr	%r10, 1009 // HID1
 	li		%r11, 3
 	rldimi	%r10, %r11, 58,4     // enable icache
 	rldimi	%r10, %r11, 38,25    // instr. prefetch
 	sync
-	mtspr	hid1, %r10
+	mtspr	1009, %r10 // HID1
 	sync
 	isync
 
-	mfspr	%r10, lpcr
+	mfspr	%r10, 318 // LPCR
 	li	    %r11, 1
 	rldimi	%r10, %r11, 1,62
 	isync
-	mtspr	lpcr, %r10
+	mtspr	318, %r10 // LPCR
 	isync
-
-	// lis	%r3, 0x8000
-	// rldicr  %r3, %r3, 32,31
-	// oris	%r3, %r3, start@high
-	// ori	%r3, %r3, start@l
-	// ld	%r2, 8(%r3)
 
 	bl 	branch_high
     bl  load_toc
 
-	mfspr	%r3, pir
+	mfspr	%r3, 1023 // PIR
 	bl 	load_stack
 
-	mfspr	%r3, pir
+	mfspr	%r3, 1023 // PIR
 	cmplwi	%r3, 0
 	bne		1f
 
 	// Initialize BSS on processor 0 only.
 	bl	init_bss
 
-	// Relocate startup source.
-	mr		%r6, %r4
-
-	mfspr	%r3, pir
-	mfspr	%r4, hrmor
-	mfpvr	%r5
+1:
+	mfspr	%r3, 1023 // PIR
+	mr		%r4, %r30 // Startup source.
+	mfmsr	%r5
+	mfspr	%r6, 313  // HRMOR
+	mfpvr	%r7
+	mr		%r8, %r29 // LPCR
 
 	bl 		__start_rust
-	nop
+	ori		%r0, %r0, 0
 
 	b	.
-
-.globl other_threads_startup
-other_threads_startup:
-	mfspr	%r3, pir
-	andi.   %r3,%r3,1
-	cmplwi  %r3,1
-	beq	1f
-
-	bl	init_regs
-	
-	li		%r3,0
-	mtspr	hrmor,%r3
-	sync
-	isync
-
-	// 0x00C00000
-	// TE = 0b11 (enable both threads)
-	lis		%r3,0xC0
-	mtspr	ctrlwr,%r3
-	sync
-	isync
-
-1:
-	li	    %r4,0x30 // Clear IR/DR
-	mfmsr	%r3
-	andc	%r3,%r3,%r4
-	mtsrr1	%r3
-
-    // Branch to the startup routine.
-    // 0x80000000_1C000000
-    lis     %r3, 0x8000
-    rldicr  %r3, %r3, 32, 31
-    oris    %r3, %r3, 0x1C00
-
-	mtsrr0	%r3
-	rfid
 
 // Initialize hardware registers.
 // R3 = clobber
@@ -203,7 +165,7 @@ init_regs:
 	// HID0: Implementation differs per CPU, but some bits are reused.
 	// On the Cell Broadband Engine, this just inhibits things we probably don't want.
 	li	%r3, 0
-	mtspr	hid0, %r3
+	mtspr	1008, %r3 // HID0
 	sync
 	isync
 
@@ -212,7 +174,7 @@ init_regs:
 	// 0x00003F0000000000
 	li	%r3, 0x3f00
 	rldicr	%r3, %r3, 32,31
-	mtspr	hid4, %r3
+	mtspr	1012, %r3 // HID4
 	sync
 	isync
 
@@ -223,7 +185,7 @@ init_regs:
 	lis	%r3, 0x9c30
 	ori	%r3,%r3, 0x1040
 	rldicr	%r3, %r3, 32,31
-	mtspr   hid1, %r3
+	mtspr   1009, %r3 // HID1
 	sync
 	isync
 
@@ -235,7 +197,7 @@ init_regs:
 	lis	%r3, 1
 	ori	%r3,%r3, 0x8038
 	rldicr	%r3, %r3, 32,31
-	mtspr	hid6, %r3
+	mtspr	1017, %r3 // HID6
 	sync
 	isync
 
@@ -246,14 +208,14 @@ init_regs:
 	// PSCTP = 1 (privileged can change priority)
 	// 0x001D0000
 	lis	%r3, 0x1d
-	mtspr	tscr, %r3
+	mtspr	921, %r3 // TSCR
 	sync
 	isync
 
 	// Thread Switch Timeout Register
 	// TTM = 0x1000 (thread interrupted after executing 4096 instructions)
 	li	%r3, 0x1000
-	mtspr	ttr, %r3
+	mtspr	922, %r3 // TTR
 	sync
 	isync
 
@@ -266,9 +228,9 @@ init_regs:
 init_bss:
 	ld		%r10, __bss_start@got(%r2)
 	ld		%r11, __bss_end@got(%r2)
-	sub		%r11, %r11, %r10
-	srdi	%r11, %r11, 2
-	subi	%r10, %r10, 1
+	sub		%r11, %r11, %r10 // r11 = (end - start)
+	srdi	%r11, %r11, 2    // r11 /= 4
+	subi	%r10, %r10, 4
 	cmplwi	%r11, 0
 	beq		1f
 

@@ -1,7 +1,7 @@
 use core::{ffi::c_void, panic::PanicInfo};
 
 #[lang = "eh_personality"]
-extern fn rust_eh_personality() {}
+extern "C" fn rust_eh_personality() {}
 
 #[panic_handler]
 #[no_mangle]

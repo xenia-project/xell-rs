@@ -1,0 +1,33 @@
+{
+    "arch": "powerpc64",
+    "cpu": "ppc64",
+    "features": "-altivec",
+    "crt-static-respected": true,
+    "data-layout": "E-m:e-i64:64-n32:64-v256:256:256-v512:512:512",
+    "dynamic-linking": true,
+    "env": "gnu",
+    "executables": true,
+    "has-elf-tls": true,
+    "has-rpath": true,
+    "is-builtin": true,
+    "linker": "rust-lld",
+    "linker-flavor": "ld.lld",
+    "linker-is-gnu": true,
+    "llvm-abiname": "elfv2",
+    "llvm-target": "powerpc64-unknown-linux-gnu",
+    "max-atomic-width": 64,
+    "os": "linux",
+    "position-independent-executables": true,
+    "pre-link-args": {
+      "gcc": [
+        "-m64"
+      ]
+    },
+    "relro-level": "partial",
+    "target-endian": "big",
+    "target-family": [
+      "unix"
+    ],
+    "target-mcount": "_mcount",
+    "target-pointer-width": "64"
+  }
