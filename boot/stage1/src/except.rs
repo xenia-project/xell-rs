@@ -61,8 +61,7 @@ pub struct CpuContext {
 }
 
 impl Debug for CpuContext {
-    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> core::fmt::Result
-    {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> core::fmt::Result {
         core::writeln!(fmt, "r:")?;
         for i in 0..32 {
             core::writeln!(fmt, "  {}: {}", i, self.r[i])?;

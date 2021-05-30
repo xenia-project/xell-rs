@@ -1,8 +1,8 @@
 //! This file defines the UART interface on the SMC.
 use sync::mutex::SpinMutex;
 
-use ufmt::uWrite;
 use core::fmt::Write;
+use ufmt::uWrite;
 
 const UART_BASE: *mut u32 = 0x8000_0200_EA00_1000 as *mut u32;
 
