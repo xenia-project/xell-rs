@@ -17,6 +17,9 @@
 /// * `src`  - Pointer to memory to copy from
 /// * `n`    - Number of bytes to copy
 ///
+/// # Safety
+/// This function copies raw memory! You must make sure the two areas point to valid memory.
+/// In addition, you MUST make sure `src` and `dst` do not overlap!
 #[no_mangle]
 pub unsafe extern "C" fn memcpy(dest: *mut u8, src: *const u8, n: usize) -> *mut u8 {
     memmove(dest, src, n)
@@ -30,6 +33,8 @@ pub unsafe extern "C" fn memcpy(dest: *mut u8, src: *const u8, n: usize) -> *mut
 /// * `src`  - Pointer to memory to copy from
 /// * `n`    - Number of bytes to copy
 ///
+/// # Safety
+/// This function copies raw memory! You must make sure the two areas point to valid memory.
 #[no_mangle]
 pub unsafe extern "C" fn memmove(dest: *mut u8, src: *const u8, n: usize) -> *mut u8 {
     if src < dest as *const u8 {
@@ -37,13 +42,13 @@ pub unsafe extern "C" fn memmove(dest: *mut u8, src: *const u8, n: usize) -> *mu
         let mut ii = n;
         while ii != 0 {
             ii -= 1;
-            *dest.offset(ii as isize) = *src.offset(ii as isize);
+            *dest.add(ii) = *src.add(ii);
         }
     } else {
         // copy forwards
         let mut ii = 0;
         while ii < n {
-            *dest.offset(ii as isize) = *src.offset(ii as isize);
+            *dest.add(ii) = *src.add(ii);
             ii += 1;
         }
     }
@@ -59,6 +64,8 @@ pub unsafe extern "C" fn memmove(dest: *mut u8, src: *const u8, n: usize) -> *mu
 /// * `c` - Character to set `n` bytes in `s` to
 /// * `n` - Number of bytes to set
 ///
+/// # Safety
+/// This function modifies raw memory! You must make sure the `s` points to valid memory.
 #[no_mangle]
 #[cfg(target_arch = "powerpc64")]
 pub unsafe extern "C" fn memset(s: *mut u8, c: i32, n: usize) -> *mut u8 {
@@ -69,7 +76,7 @@ pub unsafe extern "C" fn memset(s: *mut u8, c: i32, n: usize) -> *mut u8 {
     let mut ii = n;
     while ii != 0 {
         ii -= 1;
-        *s.offset(ii as isize) = c as u8;
+        *s.add(ii) = c as u8;
     }
 
     s
@@ -128,12 +135,16 @@ pub unsafe extern "C" fn memset(s: *mut u8, c: i32, n: usize) -> *mut u8 {
 /// * `s1` - Pointer to memory to compare with s2
 /// * `s2` - Pointer to memory to compare with s1
 /// * `n`  - Number of bytes to set
+///
+/// # Safety
+/// This function is generally safe to use as long as the raw memory
+/// is accessible.
 #[no_mangle]
 pub unsafe extern "C" fn memcmp(s1: *const u8, s2: *const u8, n: usize) -> i32 {
     let mut ii = 0;
     while ii < n {
-        let a = *s1.offset(ii as isize);
-        let b = *s2.offset(ii as isize);
+        let a = *s1.add(ii);
+        let b = *s2.add(ii);
         if a != b {
             return a as i32 - b as i32;
         }
@@ -150,12 +161,16 @@ pub unsafe extern "C" fn memcmp(s1: *const u8, s2: *const u8, n: usize) -> i32 {
 /// * `s1` - Pointer to memory to compare with s2
 /// * `s2` - Pointer to memory to compare with s1
 /// * `n`  - Number of bytes to compare
+///
+/// # Safety
+/// This function is generally safe to use as long as the raw memory
+/// is accessible.
 #[no_mangle]
 pub unsafe extern "C" fn bcmp(s1: *const u8, s2: *const u8, n: usize) -> i32 {
     let mut ii = 0;
     while ii < n {
-        let a = *s1.offset(ii as isize);
-        let b = *s2.offset(ii as isize);
+        let a = *s1.add(ii);
+        let b = *s2.add(ii);
         if a != b {
             return 1;
         }

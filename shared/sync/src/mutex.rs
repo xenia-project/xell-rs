@@ -25,6 +25,7 @@ impl<T> SpinMutex<T> {
 
     /// Retrieves the inner value without attempting to lock the spinlock,
     /// or seeing if the spinlock is already locked. Unsafe for obvious reasons.
+    #[allow(clippy::mut_from_ref)]
     pub unsafe fn get_mut_unchecked(&self) -> &mut T {
         &mut *self.inner.get()
     }
