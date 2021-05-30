@@ -11,8 +11,7 @@
 
 use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use xenon_cpu::{mfspr, mtspr};
-
-global_asm!(include_str!("startup.s"));
+use xenon_soc::{smc, uart};
 
 extern crate core_reqs;
 
@@ -20,7 +19,9 @@ extern crate core_reqs;
 mod except;
 mod panic;
 
-use xenon_soc::{smc, uart};
+use except::ExceptionType;
+
+global_asm!(include_str!("startup.s"));
 
 static PROCESSORS: AtomicU32 = AtomicU32::new(0);
 static SECONDARY_BRANCH_TARGET: AtomicUsize = AtomicUsize::new(0);
@@ -261,11 +262,21 @@ fn serial_terminal() {
     }
 }
 
-fn startup_exception(ex: except::ExceptionType, _ctx: &except::CpuContext) -> Result<(), ()> {
+fn startup_exception_handler(ex: ExceptionType, _ctx: &except::CpuContext) -> Result<(), ()> {
     let pir = xenon_cpu::intrin::pir();
     if pir != 0 {
         PROCESSORS.fetch_or(1 << pir, Ordering::Relaxed);
         uart::UART.lock(|uart| {
+            let sp = unsafe {
+                let sp: u64;
+                asm!(
+                    "mr {}, %r1",
+                    out(reg) sp
+                );
+
+                sp
+            };
+
             let toc = unsafe {
                 let toc: u64;
                 asm!(
@@ -287,13 +298,23 @@ fn startup_exception(ex: except::ExceptionType, _ctx: &except::CpuContext) -> Re
             ufmt::uwriteln!(uart, "HDEC:  {:#?}", unsafe { mfspr!(310) }).unwrap();
             ufmt::uwriteln!(uart, "DEC:   {:#?}", unsafe { mfspr!(22) }).unwrap();
             ufmt::uwriteln!(uart, "TOC:   {:#?}", toc).unwrap();
+            ufmt::uwriteln!(uart, "SP:    {:#?}", sp).unwrap();
         });
 
         loop {}
     }
 
-    // Tell the exception processing subsystem to handle it.
-    Err(())
+    match ex {
+        ExceptionType::Decrementer => {
+            writeln!("Decrementer decremented.");
+            Ok(())
+        }
+
+        _ => {
+            // Tell the exception processing subsystem to handle it.
+            Err(())
+        }
+    }
 }
 
 #[no_mangle]
@@ -303,6 +324,16 @@ pub extern "C" fn __start_rust(pir: u64, src: u32, msr: u64, hrmor: u64, pvr: u6
         if pir == 0 {
             uart.reset(uart::Speed::S115200);
         }
+
+        let sp = unsafe {
+            let sp: u64;
+            asm!(
+                "mr {}, %r1",
+                out(reg) sp
+            );
+
+            sp
+        };
 
         let toc = unsafe {
             let toc: u64;
@@ -326,6 +357,7 @@ pub extern "C" fn __start_rust(pir: u64, src: u32, msr: u64, hrmor: u64, pvr: u6
         ufmt::uwriteln!(uart, "DEC:   {:#?}", unsafe { mfspr!(22) }).unwrap();
         ufmt::uwriteln!(uart, "SRC:   {:#?}", src).unwrap();
         ufmt::uwriteln!(uart, "TOC:   {:#?}", toc).unwrap();
+        ufmt::uwriteln!(uart, "SP:    {:#?}", sp).unwrap();
     });
 
     PROCESSORS.fetch_or(1 << pir, Ordering::Relaxed);
@@ -342,7 +374,7 @@ pub extern "C" fn __start_rust(pir: u64, src: u32, msr: u64, hrmor: u64, pvr: u6
     }
 
     unsafe {
-        except::init_except(Some(startup_exception));
+        except::init_except(Some(startup_exception_handler));
     }
 
     serial_terminal();

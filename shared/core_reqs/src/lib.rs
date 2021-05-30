@@ -152,7 +152,17 @@ pub unsafe extern "C" fn memcmp(s1: *const u8, s2: *const u8, n: usize) -> i32 {
 /// * `n`  - Number of bytes to compare
 #[no_mangle]
 pub unsafe extern "C" fn bcmp(s1: *const u8, s2: *const u8, n: usize) -> i32 {
-    memcmp(s1, s2, n)
+    let mut ii = 0;
+    while ii < n {
+        let a = *s1.offset(ii as isize);
+        let b = *s2.offset(ii as isize);
+        if a != b {
+            return 1;
+        }
+        ii += 1;
+    }
+
+    0
 }
 
 // Making a fake __CxxFrameHandler3 in Rust causes a panic, this is hacky
