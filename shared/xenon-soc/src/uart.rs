@@ -1,7 +1,6 @@
 //! This file defines the UART interface on the SMC.
-use crate::mutex::SpinMutex;
+use sync::mutex::SpinMutex;
 
-use gdbstub::Connection;
 use ufmt::uWrite;
 
 const UART_BASE: *mut u32 = 0x8000_0200_EA00_1000 as *mut u32;
@@ -69,32 +68,6 @@ impl UART {
         for b in data {
             self.write_byte(*b);
         }
-    }
-}
-
-impl Connection for &mut UART {
-    type Error = core::convert::Infallible;
-
-    fn read(&mut self) -> Result<u8, Self::Error> {
-        Ok(self.read_byte())
-    }
-
-    fn write(&mut self, byte: u8) -> Result<(), Self::Error> {
-        self.write_byte(byte);
-        Ok(())
-    }
-
-    fn peek(&mut self) -> Result<Option<u8>, Self::Error> {
-        if self.data_pending() {
-            Ok(Some(self.read_byte()))
-        } else {
-            Ok(None)
-        }
-    }
-
-    fn flush(&mut self) -> Result<(), Self::Error> {
-        // No flush :)
-        Ok(())
     }
 }
 

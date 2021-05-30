@@ -1,5 +1,5 @@
 //! This file includes routines to communicate with the SMC.
-use crate::mutex::SpinMutex;
+use sync::mutex::SpinMutex;
 
 const SMC_ADDRESS: *mut u32 = 0x8000_0200_EA00_1000 as *mut u32;
 

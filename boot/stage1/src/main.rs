@@ -18,11 +18,9 @@ extern crate core_reqs;
 
 // mod gdb;
 mod except;
-mod iic;
-mod mutex;
 mod panic;
-mod smc;
-mod uart;
+
+use xenon_soc::{smc, uart};
 
 static PROCESSORS: AtomicU32 = AtomicU32::new(0);
 static SECONDARY_BRANCH_TARGET: AtomicUsize = AtomicUsize::new(0);
@@ -352,7 +350,7 @@ pub extern "C" fn __start_rust(pir: u64, src: u32, msr: u64, hrmor: u64, pvr: u6
                 // Copy the jump buffer to some unused bytes at the beginning of the hypervisor.
                 core::ptr::copy_nonoverlapping(
                     jmpbuf.as_ptr(),
-                    (hrmor + 0x000000A0) as *mut u32,
+                    0x000000A0 as *mut u32,
                     jmpbuf.len(),
                 );
 
@@ -361,13 +359,13 @@ pub extern "C" fn __start_rust(pir: u64, src: u32, msr: u64, hrmor: u64, pvr: u6
 
                 // Make the external interrupt vector jump to our trampoline.
                 core::ptr::write_volatile(
-                    (hrmor + 0x00000500) as *mut u32,
+                    0x00000500 as *mut u32,
                     make_reljump(0x00000500usize, 0x000000A0 as usize),
                 );
 
                 // Ditto for the decrementer.
                 core::ptr::write_volatile(
-                    (hrmor + 0x00000900) as *mut u32,
+                    0x00000900 as *mut u32,
                     make_reljump(0x00000900usize, 0x000000A0 as usize),
                 );
 

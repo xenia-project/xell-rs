@@ -1,6 +1,6 @@
 //! This module defines exception handlers.
 
-use crate::{iic::Iic, uart};
+use crate::{uart, smc};
 
 use ufmt::{derive::*, uDebug};
 use xenon_cpu::mfspr;
@@ -158,6 +158,7 @@ extern "C" fn handle_exception() -> ! {
     };
 
     match id {
+        /*
         ExceptionType::ExternalInterrupt => {
             let iic = Iic::local();
             let intr = iic.acknowledge();
@@ -173,12 +174,15 @@ extern "C" fn handle_exception() -> ! {
 
             loop {}
         }
+        */
 
         _ => {
+            let pir = unsafe { mfspr!(1023) };
+
             let closure = |uart: &mut uart::UART| {
                 ufmt::uwriteln!(uart, "PANIC! Hit exception vector {:?}", id).unwrap();
                 ufmt::uwriteln!(uart, "MSR:   {:#?}", xenon_cpu::intrin::mfmsr()).unwrap();
-                ufmt::uwriteln!(uart, "PIR:   {:#?}", unsafe { mfspr!(1023) }).unwrap();
+                ufmt::uwriteln!(uart, "PIR:   {:#?}", pir).unwrap();
                 ufmt::uwriteln!(uart, "---- Saved registers:\n{:?}", save_area).unwrap();
                 // ufmt::uwriteln!(uart, "    MSR:   {:#?}", save_area.msr).unwrap();
                 // ufmt::uwriteln!(uart, "    LR:    {:#?}", save_area.lr).unwrap();
@@ -208,6 +212,18 @@ extern "C" fn handle_exception() -> ! {
             if res.is_err() {
                 let mut uart = unsafe { uart::UART.get_mut_unchecked() };
                 closure(&mut uart);
+            }
+
+            if pir == 0 {
+                // Not good. Auto-reset the system.
+                smc::SMC.lock(|smc| {
+                    smc.send_message(&[
+                        0x82043000u32,
+                        0x00000000u32,
+                        0x00000000u32,
+                        0x00000000u32,
+                    ]);
+                });
             }
 
             loop {}
