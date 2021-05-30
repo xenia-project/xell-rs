@@ -1,4 +1,6 @@
-use core::{pin::Pin, ptr::NonNull, time::Duration};
+#![no_std]
+
+use core::{marker::PhantomData, pin::Pin, ptr::NonNull, time::Duration};
 use smoltcp::phy::{self, Device};
 
 #[allow(dead_code)]
@@ -24,6 +26,12 @@ enum Register {
     Address1 = 0x7A,
 }
 
+/// The type of a transmission ring.
+pub enum RingType {
+    Rx,
+    Tx,
+}
+
 // Flag bit guesses:
 // 0x8000_0000: Hardware ownership bit
 // 0x4000_0000: ??
@@ -32,7 +40,7 @@ enum Register {
 // 0x0001_0000: (TX) interrupt related?
 
 const HWDESC_FLAG_HW_OWNED: u32 = 0x80000000;
-const HWDESC_LAST_ENTRY: u32 = 0x80000000;
+const HWDESC_LAST_ENTRY: u32 = 0x80000000; // N.B: This is set in the `capacity` field.
 
 /// Transfer descriptor, as defined by hardware.
 #[repr(C, align(16))]
@@ -59,32 +67,37 @@ impl HwDescriptor {
     }
 }
 
-struct EthernetDescBuilder<'a, const N: usize>(&'a mut EthernetRing<N>, &'a mut HwDescriptor, &'a mut [u8]);
+pub struct EthernetPendingDesc<'a>(&'a mut HwDescriptor, &'a mut [u8]);
 
-impl<'a, const N: usize> EthernetDescBuilder<'a, N> {
-    fn new(ring: &'a mut EthernetRing<N>, desc: &'a mut HwDescriptor, buf: &'static mut [u8]) -> Self {
+pub struct EthernetDescBuilder<'a>(&'a mut HwDescriptor, &'a mut [u8]);
+
+impl<'a> EthernetDescBuilder<'a> {
+    fn new(desc: &'a mut HwDescriptor, buf: &'static mut [u8]) -> Self {
         desc.capacity = (desc.capacity & 0x80000000) | ((buf.len() as u32) & 0x7FFFFFFF);
         desc.addr = buf.as_mut_ptr() as u32;
 
-        Self(ring, desc, buf)
+        Self(desc, buf)
     }
 
     pub fn set_flags(self, flags: u32) -> Self {
-        self.1.flags = flags;
+        self.0.flags = flags;
 
         self
     }
 
-    pub fn commit(self) {
-        self.0.avail = (self.0.avail + 1) % N;
-        self.1.flags |= HWDESC_FLAG_HW_OWNED;
+    pub fn commit(self) -> EthernetPendingDesc<'a> {
+        self.0.flags |= HWDESC_FLAG_HW_OWNED;
+        EthernetPendingDesc(self.0, self.1)
     }
 }
 
-
+/// Represents an ethernet descriptor that has pending data.
+pub struct EthernetCompleteDesc<'a>(&'a mut HwDescriptor);
 
 /// This structure represents a ring of DMA buffer descriptors for a Xenon MAC.
-pub struct EthernetRing<const N: usize> {
+pub struct EthernetRing<T: RingType, const N: usize> {
+    ring_type: PhantomData<T>,
+
     descriptors: [HwDescriptor; N],
 
     /// Index of first busy buffer (or represents no busy buffers if equivalent to `avail`)
@@ -93,8 +106,11 @@ pub struct EthernetRing<const N: usize> {
     avail: usize,
 }
 
-impl<const N: usize> EthernetRing<N> {
+impl<const T: RingType, const N: usize> EthernetRing<T, N> {
     pub fn new() -> Self {
+        let mut descriptors = [HwDescriptor::new(); N];
+        descriptors.last_mut().unwrap().capacity = HWDESC_LAST_ENTRY;
+
         Self {
             descriptors: [HwDescriptor::new(); N],
 
@@ -103,25 +119,27 @@ impl<const N: usize> EthernetRing<N> {
         }
     }
 
-    /*
-    pub fn next_avail<'a>(&'a mut self, buf: &'static mut [u8]) -> Option<EthernetDescBuilder<'a, N>> {
+    pub fn next_avail<'a>(&'a mut self, buf: &'static mut [u8]) -> Option<EthernetDescBuilder<'a>> {
         let desc = &mut self.descriptors[self.avail];
 
         if desc.is_free() {
-            Some(EthernetDescBuilder::new(self, desc, buf))
+            Some(EthernetDescBuilder::new(desc, buf))
         } else {
             None
         }
     }
-    */
+
+    pub fn next_complete<'a>(&'a mut self) -> Option<EthernetCompleteDesc<'a, N>> {
+        None
+    }
 }
 
 #[repr(align(16))]
 pub struct EthernetDevice<const N: usize, const M: usize> {
     mmio: core::ptr::NonNull<u8>,
 
-    rx_ring: &'static mut EthernetRing<N>,
-    tx_ring: &'static mut EthernetRing<M>,
+    rx_ring: &'static mut EthernetRing<RingType::Rx, N>,
+    tx_ring: &'static mut EthernetRing<RingType::Tx, M>,
 }
 
 impl<const N: usize, const M: usize> EthernetDevice<N, M> {
@@ -129,7 +147,10 @@ impl<const N: usize, const M: usize> EthernetDevice<N, M> {
     ///
     /// SAFETY: The caller _MUST_ ensure that there is only one instance
     /// of this object at a time. Multiple instances will cause undefined behavior.
-    pub unsafe fn new(rx_ring: &'static mut EthernetRing<N>, tx_ring: &'static mut EthernetRing<M>) -> Self {
+    pub unsafe fn new(
+        rx_ring: &'static mut EthernetRing<RingType::Rx, N>,
+        tx_ring: &'static mut EthernetRing<RingType::Tx, M>,
+    ) -> Self {
         let mut obj = Self {
             mmio: NonNull::new_unchecked(0x8000_0200_EA00_1400 as *mut u8),
 
@@ -143,37 +164,35 @@ impl<const N: usize, const M: usize> EthernetDevice<N, M> {
 
     fn write<T>(&mut self, reg: Register, val: T) {
         // SAFETY: The access is bounded by Register, and cannot arbitrarily overflow.
-        unsafe { core::ptr::write_volatile(self.mmio.as_ptr().offset(reg as isize) as *mut T, val); }
+        unsafe {
+            core::ptr::write_volatile(self.mmio.as_ptr().offset(reg as isize) as *mut T, val);
+        }
     }
-    
+
     fn read<T>(&mut self, reg: Register) -> T {
         // SAFETY: The access is bounded by Register, and cannot arbitrarily overflow.
         unsafe { core::ptr::read_volatile(self.mmio.as_ptr().offset(reg as isize) as *mut T) }
     }
 
     pub fn reset(&mut self) {
-        unsafe {
-            // Zero out the interrupt mask.
-            self.write(Register::InterruptMask, 0x00000000);
+        // Zero out the interrupt mask.
+        self.write(Register::InterruptMask, 0x00000000);
 
-            self.write(Register::Config0, 0x08558001);
-            xenon_cpu::time::delay(Duration::from_micros(100));
-            self.write(Register::Config0, 0x08550001);
+        self.write(Register::Config0, 0x08558001);
+        xenon_cpu::time::delay(Duration::from_micros(100));
+        self.write(Register::Config0, 0x08550001);
 
-            self.write(Register::PhyControl, 0x00000004);
-            xenon_cpu::time::delay(Duration::from_micros(100));
-            self.write(Register::PhyControl, 0x00000004);
+        self.write(Register::PhyControl, 0x00000004);
+        xenon_cpu::time::delay(Duration::from_micros(100));
+        self.write(Register::PhyControl, 0x00000004);
 
-            self.write(Register::MaxPacketSize, 1522);
+        self.write(Register::MaxPacketSize, 1522);
 
-            self.write(Register::Config1, 0x2360);
+        self.write(Register::Config1, 0x2360);
 
-            self.write(Register::MulticastFilterControl, 0x0E38);
+        self.write(Register::MulticastFilterControl, 0x0E38);
 
-            // TODO: MAC address
-
-
-        }
+        // TODO: MAC address
     }
 }
 

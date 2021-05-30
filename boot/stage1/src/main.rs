@@ -25,11 +25,6 @@ use xenon_soc::{smc, uart};
 static PROCESSORS: AtomicU32 = AtomicU32::new(0);
 static SECONDARY_BRANCH_TARGET: AtomicUsize = AtomicUsize::new(0);
 
-extern "C" {
-    // fn start_from_rom() -> !;
-    fn start_from_libxenon() -> !;
-}
-
 macro_rules! writeln {
     ($($tts:tt)*) => {
         uart::UART.lock(|mut uart| {
@@ -46,7 +41,8 @@ macro_rules! write {
     };
 }
 
-const fn make_longjmp(target: usize) -> [u32; 12] {
+#[allow(dead_code)]
+const fn make_longjmp(target: usize, p1: u64) -> [u32; 17] {
     [
         (0x3C600000 | ((target >> 48) & 0xFFFF)) as u32, // lis     %r3, target[64:48]
         (0x60630000 | ((target >> 32) & 0xFFFF)) as u32, // ori     %r3, %r3, target[48:32]
@@ -60,11 +56,18 @@ const fn make_longjmp(target: usize) -> [u32; 12] {
         0x7C6000A6, // mfmsr    %r3
         0x7C632078, // andc     %r3, %r3, %r4
         0x7C7B03A6, // mtsrr1   %r3
+        // Load the parameter.
+        (0x3C600000 | ((p1 >> 48) & 0xFFFF)) as u32, // lis     %r3, p1[64:48]
+        (0x60630000 | ((p1 >> 32) & 0xFFFF)) as u32, // ori     %r3, %r3, p1[48:32]
+        0x786307C6,                                  // rldicr  %r3, %r3, 32, 31
+        (0x64630000 | ((p1 >> 16) & 0xFFFF)) as u32, // oris    %r3, %r3, p1[32:16]
+        (0x60630000 | ((p1 >> 00) & 0xFFFF)) as u32, // ori     %r3, %r3, p1[16:0]
         // Branch to target.
         0x4C000024, // rfid
     ]
 }
 
+#[allow(dead_code)]
 const fn abs_diff(a: usize, b: usize) -> usize {
     if a > b {
         a - b
@@ -73,6 +76,7 @@ const fn abs_diff(a: usize, b: usize) -> usize {
     }
 }
 
+#[allow(dead_code)]
 const fn make_reljump(address: usize, target: usize) -> u32 {
     let diff = abs_diff(target, address);
     let offset = target.wrapping_sub(address);
@@ -130,7 +134,7 @@ fn serial_terminal() {
             Err(_) => continue,
         };
 
-        let mut args = line.split(" ");
+        let mut args = line.split(' ');
         match args.next() {
             Some("r64") => {
                 let addr = {
@@ -222,24 +226,23 @@ fn serial_terminal() {
             Some("reboot") => {
                 writeln!("Rebooting system...");
                 smc::SMC.lock(|smc| {
-                    smc.send_message(&[
-                        0x82043000u32,
-                        0x00000000u32,
-                        0x00000000u32,
-                        0x00000000u32,
-                    ]);
+                    smc.send_message(&[0x82043000u32, 0x00000000u32, 0x00000000u32, 0x00000000u32]);
                 });
             }
 
             Some("except") => {
                 writeln!("If you say so...");
                 unsafe {
-                    except::test_take_exception();
+                    except::cause_exception();
                 }
             }
 
             Some("ping") => {
                 writeln!("pong");
+            }
+
+            Some("🍆") => {
+                writeln!(";)");
             }
 
             Some("boot") => {
@@ -249,13 +252,48 @@ fn serial_terminal() {
 
             Some("") => {}
 
-            Some(&_) => {
-                writeln!("Unknown command!");
+            Some(cmd) => {
+                writeln!("Unknown command \"{}\"!", cmd);
             }
 
             None => {}
         }
     }
+}
+
+fn startup_exception(ex: except::ExceptionType, _ctx: &except::CpuContext) -> Result<(), ()> {
+    let pir = xenon_cpu::intrin::pir();
+    if pir != 0 {
+        PROCESSORS.fetch_or(1 << pir, Ordering::Relaxed);
+        uart::UART.lock(|uart| {
+            let toc = unsafe {
+                let toc: u64;
+                asm!(
+                    "mr {}, %r2",
+                    out(reg) toc
+                );
+
+                toc
+            };
+
+            let msr = xenon_cpu::intrin::mfmsr();
+
+            ufmt::uwriteln!(uart, "Hello from processor {:#?}!", pir).unwrap();
+            ufmt::uwriteln!(uart, "EXC:   {:?}", ex).unwrap();
+            ufmt::uwriteln!(uart, "PIR:   {:#?}", pir).unwrap();
+            ufmt::uwriteln!(uart, "MSR:   {:#?}", msr).unwrap();
+            ufmt::uwriteln!(uart, "LPCR:  {:#?}", unsafe { mfspr!(318) }).unwrap();
+            ufmt::uwriteln!(uart, "LPIDR: {:#?}", unsafe { mfspr!(319) }).unwrap();
+            ufmt::uwriteln!(uart, "HDEC:  {:#?}", unsafe { mfspr!(310) }).unwrap();
+            ufmt::uwriteln!(uart, "DEC:   {:#?}", unsafe { mfspr!(22) }).unwrap();
+            ufmt::uwriteln!(uart, "TOC:   {:#?}", toc).unwrap();
+        });
+
+        loop {}
+    }
+
+    // Tell the exception processing subsystem to handle it.
+    Err(())
 }
 
 #[no_mangle]
@@ -304,10 +342,7 @@ pub extern "C" fn __start_rust(pir: u64, src: u32, msr: u64, hrmor: u64, pvr: u6
     }
 
     unsafe {
-        // HRMOR = 0
-        // N.B: We can only modify HRMOR when other threads are captured!
-        // mtspr!(313, 0x00000000);
-        except::init_except();
+        except::init_except(Some(startup_exception));
     }
 
     serial_terminal();
@@ -343,51 +378,7 @@ pub extern "C" fn __start_rust(pir: u64, src: u32, msr: u64, hrmor: u64, pvr: u6
 
             // We'll need to catch all other cores that may still be running the OS.
             // Set a branch on the external interrupt vector, and trigger an IPI.
-            unsafe {
-                // Create a jump buffer. This will perform a longjmp to our target address in real-mode.
-                let jmpbuf = make_longjmp(start_from_libxenon as usize);
-
-                // Copy the jump buffer to some unused bytes at the beginning of the hypervisor.
-                core::ptr::copy_nonoverlapping(
-                    jmpbuf.as_ptr(),
-                    0x000000A0 as *mut u32,
-                    jmpbuf.len(),
-                );
-
-                // Ensure the compiler does not reorder instructions.
-                core::sync::atomic::compiler_fence(Ordering::SeqCst);
-
-                // Make the external interrupt vector jump to our trampoline.
-                core::ptr::write_volatile(
-                    0x00000500 as *mut u32,
-                    make_reljump(0x00000500usize, 0x000000A0 as usize),
-                );
-
-                // Ditto for the decrementer.
-                core::ptr::write_volatile(
-                    0x00000900 as *mut u32,
-                    make_reljump(0x00000900usize, 0x000000A0 as usize),
-                );
-
-                // Ensure the compiler does not reorder instructions.
-                core::sync::atomic::compiler_fence(Ordering::SeqCst);
-
-                writeln!(
-                    "External interrupt vector overwritten. Triggering IPI on all other cores."
-                );
-
-                // Set the IRQL on all other processors to 0 (to unmask all interrupts).
-                // The hypervisor isn't going to like this, but we set a detour on the interrupt vector earlier.
-                for i in 1usize..6usize {
-                    let ptr = (0x8000_0200_0005_0000 + (i * 0x1000)) as *mut u64;
-                    ptr.offset(1).write_volatile(0);
-                }
-
-                // Trigger an IPI on all other processors, with vector 0x78.
-                core::ptr::write_volatile(0x8000_0200_0005_0010 as *mut u64, 0x003E_0078);
-            };
-
-            writeln!("IPI in progress. Waiting...");
+            writeln!("Triggering IPI on all other cores.");
 
             // Loop...
             while PROCESSORS.load(Ordering::Relaxed) != 0x3F {
@@ -400,7 +391,19 @@ pub extern "C" fn __start_rust(pir: u64, src: u32, msr: u64, hrmor: u64, pvr: u6
                     smc.set_led(true, PROCESSORS.load(Ordering::Relaxed) as u8);
                 });
 
-                xenon_cpu::time::delay(core::time::Duration::from_millis(20));
+                unsafe {
+                    // Set the IRQL on all other processors to 0 (to unmask all interrupts).
+                    // The hypervisor isn't going to like this, but we set a detour on the interrupt vector earlier.
+                    for i in 1usize..6usize {
+                        let ptr = (0x8000_0200_0005_0000 + (i * 0x1000)) as *mut u64;
+                        ptr.offset(1).write_volatile(0);
+                    }
+
+                    // Trigger an IPI on all other processors, with vector 0x78.
+                    core::ptr::write_volatile(0x8000_0200_0005_0010 as *mut u64, 0x003E_0078);
+                }
+
+                xenon_cpu::time::delay(core::time::Duration::from_millis(100));
             }
 
             writeln!("Processors captured.");
@@ -416,6 +419,8 @@ pub extern "C" fn __start_rust(pir: u64, src: u32, msr: u64, hrmor: u64, pvr: u6
     });
 
     writeln!("System captured.");
+
+    serial_terminal();
 
     loop {}
 }

@@ -7,6 +7,6 @@ members = [
     "shared/xenon-cpu",
     "shared/xenon-soc",
     "shared/sync",
-#    "shared/xenon-enet",
+    # "shared/xenon-enet",
 ]
 

@@ -34,7 +34,7 @@ impl<T> SpinMutex<T> {
         // Attempt to acquire the lock.
         match self
             .lock_count
-            .compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst)
+            .compare_exchange(0, 1, Ordering::Acquire, Ordering::Relaxed)
         {
             Ok(_) => {}
             Err(_) => return Err(()),
@@ -44,7 +44,7 @@ impl<T> SpinMutex<T> {
         let r = f(unsafe { &mut *self.inner.get() });
 
         // Release the lock.
-        self.lock_count.fetch_sub(1, Ordering::SeqCst);
+        self.lock_count.fetch_sub(1, Ordering::Release);
 
         Ok(r)
     }
@@ -55,7 +55,7 @@ impl<T> SpinMutex<T> {
         loop {
             match self
                 .lock_count
-                .compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst)
+                .compare_exchange(0, 1, Ordering::Acquire, Ordering::Relaxed)
             {
                 Ok(_) => break,
                 Err(_) => continue,
@@ -66,7 +66,7 @@ impl<T> SpinMutex<T> {
         let r = f(unsafe { &mut *self.inner.get() });
 
         // Release the lock.
-        self.lock_count.fetch_sub(1, Ordering::SeqCst);
+        self.lock_count.fetch_sub(1, Ordering::Release);
 
         r
     }

@@ -6,7 +6,8 @@ edition = "2018"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-smoltcp = "0.7.1"
-volatile = "0.4.4"
+smoltcp = { version = "0.7.3", default-features = false, features = [
+    "log", "proto-ipv4", "proto-ipv6"
+] }
 
 xenon-cpu = { path = "../xenon-cpu" }

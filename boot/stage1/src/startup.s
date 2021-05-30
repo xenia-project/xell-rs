@@ -226,8 +226,8 @@ init_regs:
 // R11 = clobber
 // CTR = clobber
 init_bss:
-	ld		%r10, __bss_start@got(%r2)
-	ld		%r11, __bss_end@got(%r2)
+	ld		%r10, __bss_start@toc(%r2)
+	ld		%r11, __bss_end@toc(%r2)
 	sub		%r11, %r11, %r10 // r11 = (end - start)
 	srdi	%r11, %r11, 2    // r11 /= 4
 	subi	%r10, %r10, 4

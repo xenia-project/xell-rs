@@ -28,6 +28,11 @@ pub fn mfmsr() -> u64 {
     msr
 }
 
+#[inline]
+pub unsafe fn mtmsr(msr: u64) {
+    asm!("mtmsr {}", in(reg) msr);
+}
+
 #[macro_export]
 macro_rules! mtspr {
     ($spr:literal, $val:expr) => {

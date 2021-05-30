@@ -2,6 +2,7 @@
 use sync::mutex::SpinMutex;
 
 use ufmt::uWrite;
+use core::fmt::Write;
 
 const UART_BASE: *mut u32 = 0x8000_0200_EA00_1000 as *mut u32;
 
@@ -68,6 +69,21 @@ impl UART {
         for b in data {
             self.write_byte(*b);
         }
+    }
+}
+
+impl Write for UART {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        for c in s.as_bytes().iter() {
+            // Prepend newline characters with a carriage return.
+            if *c == b'\n' {
+                self.write_byte(b'\r');
+            }
+
+            self.write_byte(*c);
+        }
+
+        Ok(())
     }
 }
 
