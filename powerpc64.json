@@ -1,7 +1,8 @@
 {
     "arch": "powerpc64",
     "cpu": "ppc64",
-    "features": "-altivec",
+    "relocation-model": "static",
+    "features": "-altivec,-hard-float",
     "crt-static-respected": true,
     "data-layout": "E-m:e-i64:64-n32:64-v256:256:256-v512:512:512",
     "dynamic-linking": true,
@@ -17,7 +18,7 @@
     "llvm-target": "powerpc64-unknown-linux-gnu",
     "max-atomic-width": 64,
     "os": "linux",
-    "position-independent-executables": true,
+    "position-independent-executables": false,
     "pre-link-args": {
       "gcc": [
         "-m64"

@@ -97,9 +97,8 @@ start_common:
 	mr		%r30, %r4			// Relocate startup source.
 	mfspr   %r29, 318			// LPCR
 
-	// disable interrupts (but enable vector available, gcc likes to use VMX
-	// for memset)
-	lis		%r3, 0x200
+	// disable MSR[EE]
+	li		%r3, 2
 	mtmsrd	%r3, 1
 
 	li		%r3, 2
@@ -128,7 +127,9 @@ start_common:
 	mtspr	318, %r10 // LPCR
 	isync
 
-	bl 	branch_high
+	bl 	disable_hrmor
+	bl	relocate
+
     bl  load_toc
 
 	mfspr	%r3, 1023 // PIR
@@ -244,10 +245,10 @@ init_bss:
 1:
 	blr
 
-// Sets the high bit in PC.
+// Sets the high bit in PC, disabling HRMOR.
 // R3 = clobber
 // R10 = clobber
-branch_high:
+disable_hrmor:
     mflr    %r10
 
     lis	    %r3, 0x8000
@@ -272,6 +273,11 @@ load_stack:
 	subi	%r1, %r1, 0x80
 	blr
 
+// R3 = lr
+load_lr:
+	mflr	%r3
+	blr
+
 // Loads the table of contents pointer into R2.
 // R0 = clobber
 // R2 = TOC
@@ -289,6 +295,104 @@ load_toc:
 .balign 8
 p_toc:  .8byte  __toc_start + 0x8000 - 0b
 
-.globl other_threads_startup_end
-other_threads_startup_end:
+// Relocates the bootloader to the compiled-in address.
+// R2 = TOC
+// R3 = clobber
+// R4 = clobber
+// R5 = clobber
+// R6 = clobber
+// R7 = clobber
+// R10 = clobber
+// R11 = clobber
+relocate:
+	mflr 	%r10
 
+	// Load the TOC.
+	bl		load_toc
+
+	bl		load_lr
+0:
+
+	// Relocate the relocation routine to 0x8000_0000_0000_0000.
+	addi	%r4, %r3, __relocate_memmove_start - 0b
+	lis		%r3, 0x8000
+	sldi	%r3, %r3, 32
+	mr		%r11, %r3
+	li		%r5, __relocate_memmove_end - __relocate_memmove_start
+	bl		relocate_memmove
+
+	// Great. Now relocate the bootloader.
+	lis		%r3, (__toc_start + 0x8000)@highest
+	ori		%r3, %r3, (__toc_start + 0x8000)@higher
+	sldi	%r3, %r3, 32
+	oris	%r3, %r3, (__toc_start + 0x8000)@high
+	ori		%r3, %r3, (__toc_start + 0x8000)@l
+
+	// R4 = move delta
+	sub		%r4, %r3, %r2
+
+	// Relocate the return address.
+	add		%r10, %r10, %r4
+
+	// R3 = DST
+	lis		%r3, _start@highest
+	ori		%r3, %r3, _start@higher
+	sldi	%r3, %r3, 32
+	oris	%r3, %r3, _start@high
+	ori		%r3, %r3, _start@l
+
+	// R4 = SRC
+	sub		%r4, %r3, %r4
+
+	// R5 = LEN
+	lis		%r5, 0x1
+
+	// Restore the return address.
+	mtlr	%r10
+	mtctr	%r11
+	bctr
+
+__relocate_memmove_start:
+
+// R3 = dst
+// R4 = src
+// R5 = len
+// R6 = clobber
+// R7 = clobber
+relocate_memmove:
+	cmpld	%r3, %r4
+	bge 	forward
+
+backward:
+	add		%r4, %r4, %r5
+	addi	%r6, %r5, 1
+	add		%r5, %r3, %r5
+	mtctr	%r6
+
+backward_loop:
+	bdzlr
+	lbz		%r6, -0x1(%r4)
+	subi	%r7, %r5, 1
+	subi	%r4, %r4, 1
+	stb		%r6, -0x1(%r5)
+	mr		%r5, %r7
+	b		backward_loop
+
+forward:
+	subi	%r4, %r4, 1
+	addi	%r6, %r5, 1
+	subi	%r5, %r3, 1
+	mtctr	%r6
+	bdzlr
+
+forward_loop:
+	lbz		%r6, 0x1(%r4)
+	addi	%r7, %r5, 1
+	addi	%r4, %r4, 1
+	stb		%r6, 0x1(%r5)
+	mr		%r5, %r7
+	bdnz	forward_loop
+
+	blr
+
+__relocate_memmove_end:
