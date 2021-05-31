@@ -52,7 +52,6 @@ dependencies = [
  "atomic",
  "core_reqs",
  "sync",
- "ufmt",
  "xenon-cpu",
  "xenon-soc",
 ]

@@ -6,18 +6,8 @@ edition = "2018"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-ufmt = "0.1.0"
 core_reqs = { path = "../../shared/core_reqs" }
 xenon-cpu = { path = "../../shared/xenon-cpu" }
 xenon-soc = { path = "../../shared/xenon-soc" }
 sync = { path = "../../shared/sync" }
 atomic = "0.5.0"
-
-[profile.dev]
-panic = "abort"
-
-[profile.release]
-panic = "abort"
-opt-level = "s"
-lto = true
-

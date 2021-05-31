@@ -30,7 +30,12 @@ pub fn mfmsr() -> u64 {
 
 #[inline]
 pub unsafe fn mtmsr(msr: u64) {
-    asm!("mtmsr {}", in(reg) msr);
+    asm!("mtmsrd {}, 0", in(reg) msr);
+}
+
+#[inline]
+pub unsafe fn mtmsrl(msr: u64) {
+    asm!("mtmsrd {}, 1", in(reg) msr);
 }
 
 #[macro_export]

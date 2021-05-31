@@ -9,8 +9,11 @@
 #![no_std]
 #![no_main]
 
-use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
-use xenon_cpu::{mfspr, mtspr};
+use core::{
+    fmt::Write,
+    sync::atomic::{AtomicU32, AtomicUsize, Ordering},
+};
+use xenon_cpu::{intrin::mfmsr, mfspr, mtspr};
 use xenon_soc::{smc, uart};
 
 extern crate core_reqs;
@@ -26,20 +29,25 @@ global_asm!(include_str!("startup.s"));
 static PROCESSORS: AtomicU32 = AtomicU32::new(0);
 static SECONDARY_BRANCH_TARGET: AtomicUsize = AtomicUsize::new(0);
 
-macro_rules! writeln {
+macro_rules! println {
     ($($tts:tt)*) => {
         uart::UART.lock(|mut uart| {
-            ufmt::uwriteln!(&mut uart, $($tts)*).unwrap();
+            core::writeln!(&mut uart, $($tts)*).unwrap();
         });
     };
 }
 
-macro_rules! write {
+macro_rules! print {
     ($($tts:tt)*) => {
         uart::UART.lock(|mut uart| {
-            ufmt::uwrite!(&mut uart, $($tts)*).unwrap();
+            core::write!(&mut uart, $($tts)*).unwrap();
         });
     };
+}
+
+#[allow(dead_code)]
+const fn bit(b: u64) -> u64 {
+    0x8000_0000_0000_0000 >> b
 }
 
 #[allow(dead_code)]
@@ -126,7 +134,7 @@ fn read_line(uart: &mut uart::UART, line: &mut [u8]) -> usize {
 fn serial_terminal() {
     let mut buf = [0u8; 1024];
     loop {
-        write!("\n> ");
+        print!("\n> ");
 
         let n = uart::UART.lock(|mut uart| read_line(&mut uart, &mut buf));
 
@@ -142,7 +150,7 @@ fn serial_terminal() {
                     let addr_str = match args.next() {
                         Some(a) => a,
                         None => {
-                            writeln!("r64 <address>");
+                            println!("r64 <address>");
                             continue;
                         }
                     };
@@ -150,14 +158,14 @@ fn serial_terminal() {
                     match u64::from_str_radix(addr_str, 16) {
                         Ok(n) => n,
                         Err(_) => {
-                            writeln!("invalid address");
+                            println!("invalid address");
                             continue;
                         }
                     }
                 };
 
                 let val = unsafe { core::ptr::read_volatile(addr as *const u64) };
-                writeln!("{:#?}", val);
+                println!("{:016X}", val);
             }
 
             Some("w64") => {
@@ -165,7 +173,7 @@ fn serial_terminal() {
                     let addr_str = match args.next() {
                         Some(a) => a,
                         None => {
-                            writeln!("w64 <address> <val>");
+                            println!("w64 <address> <val>");
                             continue;
                         }
                     };
@@ -173,7 +181,7 @@ fn serial_terminal() {
                     match u64::from_str_radix(addr_str, 16) {
                         Ok(n) => n,
                         Err(_) => {
-                            writeln!("invalid address");
+                            println!("invalid address");
                             continue;
                         }
                     }
@@ -183,7 +191,7 @@ fn serial_terminal() {
                     let val_str = match args.next() {
                         Some(a) => a,
                         None => {
-                            writeln!("w64 <address> <val>");
+                            println!("w64 <address> <val>");
                             continue;
                         }
                     };
@@ -191,7 +199,7 @@ fn serial_terminal() {
                     match u64::from_str_radix(val_str, 16) {
                         Ok(n) => n,
                         Err(_) => {
-                            writeln!("invalid value");
+                            println!("invalid value");
                             continue;
                         }
                     }
@@ -207,7 +215,7 @@ fn serial_terminal() {
                     let val_str = match args.next() {
                         Some(s) => s,
                         None => {
-                            writeln!("mthrmor <val>");
+                            println!("mthrmor <val>");
                             continue;
                         }
                     };
@@ -215,7 +223,7 @@ fn serial_terminal() {
                     match u64::from_str_radix(val_str, 16) {
                         Ok(n) => n,
                         Err(_) => {
-                            writeln!("invalid address");
+                            println!("invalid address");
                             continue;
                         }
                     }
@@ -225,36 +233,36 @@ fn serial_terminal() {
             }
 
             Some("reboot") => {
-                writeln!("Rebooting system...");
+                println!("Rebooting system...");
                 smc::SMC.lock(|smc| {
                     smc.send_message(&[0x82043000u32, 0x00000000u32, 0x00000000u32, 0x00000000u32]);
                 });
             }
 
             Some("except") => {
-                writeln!("If you say so...");
+                println!("If you say so...");
                 unsafe {
                     except::cause_exception();
                 }
             }
 
             Some("ping") => {
-                writeln!("pong");
+                println!("pong");
             }
 
             Some("🍆") => {
-                writeln!(";)");
+                println!(";)");
             }
 
             Some("boot") => {
-                writeln!("Booting...");
+                println!("Booting...");
                 return;
             }
 
             Some("") => {}
 
             Some(cmd) => {
-                writeln!("Unknown command \"{}\"!", cmd);
+                println!("Unknown command \"{}\"!", cmd);
             }
 
             None => {}
@@ -262,64 +270,73 @@ fn serial_terminal() {
     }
 }
 
-fn startup_exception_handler(ex: ExceptionType, _ctx: &except::CpuContext) -> Result<(), ()> {
+fn startup_exception_handler(ex: ExceptionType, ctx: &mut except::CpuContext) -> Result<(), ()> {
     let pir = xenon_cpu::intrin::pir();
-    if pir != 0 {
-        PROCESSORS.fetch_or(1 << pir, Ordering::Relaxed);
-        uart::UART.lock(|uart| {
-            let sp = unsafe {
-                let sp: u64;
-                asm!(
-                    "mr {}, %r1",
-                    out(reg) sp
-                );
+    uart::UART.lock(|uart| {
+        let sp = unsafe {
+            let sp: u64;
+            asm!(
+                "mr {}, %r1",
+                out(reg) sp
+            );
 
-                sp
-            };
+            sp
+        };
 
-            let toc = unsafe {
-                let toc: u64;
-                asm!(
-                    "mr {}, %r2",
-                    out(reg) toc
-                );
+        let toc = unsafe {
+            let toc: u64;
+            asm!(
+                "mr {}, %r2",
+                out(reg) toc
+            );
 
-                toc
-            };
+            toc
+        };
 
-            let msr = xenon_cpu::intrin::mfmsr();
+        let msr = xenon_cpu::intrin::mfmsr();
 
-            ufmt::uwriteln!(uart, "Hello from processor {:#?}!", pir).unwrap();
-            ufmt::uwriteln!(uart, "EXC:   {:?}", ex).unwrap();
-            ufmt::uwriteln!(uart, "PIR:   {:#?}", pir).unwrap();
-            ufmt::uwriteln!(uart, "MSR:   {:#?}", msr).unwrap();
-            ufmt::uwriteln!(uart, "LPCR:  {:#?}", unsafe { mfspr!(318) }).unwrap();
-            ufmt::uwriteln!(uart, "LPIDR: {:#?}", unsafe { mfspr!(319) }).unwrap();
-            ufmt::uwriteln!(uart, "HDEC:  {:#?}", unsafe { mfspr!(310) }).unwrap();
-            ufmt::uwriteln!(uart, "DEC:   {:#?}", unsafe { mfspr!(22) }).unwrap();
-            ufmt::uwriteln!(uart, "TOC:   {:#?}", toc).unwrap();
-            ufmt::uwriteln!(uart, "SP:    {:#?}", sp).unwrap();
-        });
+        core::writeln!(uart, "Exception on processor {:#?}!", pir).unwrap();
+        core::writeln!(uart, "EXC:   {:?}", ex).unwrap();
+        core::writeln!(uart, "MSR:   {:016X}", msr).unwrap();
+        core::writeln!(uart, "LPCR:  {:016X}", unsafe { mfspr!(318) }).unwrap();
+        core::writeln!(uart, "LPIDR: {:016X}", unsafe { mfspr!(319) }).unwrap();
+        core::writeln!(uart, "HDEC:  {:016X}", unsafe { mfspr!(310) }).unwrap();
+        core::writeln!(uart, "DEC:   {:016X}", unsafe { mfspr!(22) }).unwrap();
+        core::writeln!(uart, "TOC:   {:016X}", toc).unwrap();
+        core::writeln!(uart, "SP:    {:016X}", sp).unwrap();
+        core::writeln!(uart, "CTX:\n{:>3?}", ctx).unwrap();
+    });
 
-        loop {}
+    // Branch to thread entry.
+    let context =
+        except::CpuContext::with_hvcall(thread_entry as usize, 0x8000_0000_1E00_0000 - (pir << 16));
+    unsafe {
+        except::load_context(&context);
     }
+}
 
-    match ex {
-        ExceptionType::Decrementer => {
-            writeln!("Decrementer decremented.");
-            Ok(())
-        }
+fn thread_entry() -> ! {
+    let pir = xenon_cpu::intrin::pir();
+    PROCESSORS.fetch_or(1 << pir, Ordering::Relaxed);
 
-        _ => {
-            // Tell the exception processing subsystem to handle it.
-            Err(())
-        }
-    }
+    loop {}
 }
 
 #[no_mangle]
 #[link_section = ".text.startup"]
-pub extern "C" fn __start_rust(pir: u64, src: u32, msr: u64, hrmor: u64, pvr: u64, lpcr: u64) -> ! {
+pub extern "C" fn __start_rust(
+    pir: u64,
+    src: u32,
+    _msr: u64,
+    hrmor: u64,
+    pvr: u64,
+    lpcr: u64,
+) -> ! {
+    // Clear out the relocation routine written by startup.s
+    unsafe {
+        core_reqs::memset(0x8000_0000_0000_0000 as *mut u8, 0x00, 0x100);
+    }
+
     uart::UART.lock(|uart| {
         if pir == 0 {
             uart.reset(uart::Speed::S115200);
@@ -345,19 +362,18 @@ pub extern "C" fn __start_rust(pir: u64, src: u32, msr: u64, hrmor: u64, pvr: u6
             toc
         };
 
-        ufmt::uwriteln!(uart, "Hello from processor {:#?}!", pir).unwrap();
-        ufmt::uwriteln!(uart, "PIR:   {:#?}", pir).unwrap();
-        ufmt::uwriteln!(uart, "MSR:   {:#?}", msr).unwrap();
-        ufmt::uwriteln!(uart, "HRMOR: {:#?}", hrmor).unwrap();
-        ufmt::uwriteln!(uart, "RMOR:  {:#?}", unsafe { mfspr!(312) }).unwrap();
-        ufmt::uwriteln!(uart, "LPCR:  {:#?}", lpcr).unwrap();
-        ufmt::uwriteln!(uart, "LPIDR: {:#?}", unsafe { mfspr!(319) }).unwrap();
-        ufmt::uwriteln!(uart, "PVR:   {:#?}", pvr).unwrap();
-        ufmt::uwriteln!(uart, "HDEC:  {:#?}", unsafe { mfspr!(310) }).unwrap();
-        ufmt::uwriteln!(uart, "DEC:   {:#?}", unsafe { mfspr!(22) }).unwrap();
-        ufmt::uwriteln!(uart, "SRC:   {:#?}", src).unwrap();
-        ufmt::uwriteln!(uart, "TOC:   {:#?}", toc).unwrap();
-        ufmt::uwriteln!(uart, "SP:    {:#?}", sp).unwrap();
+        core::writeln!(uart, "Hello from processor {:#?}!", pir).unwrap();
+        core::writeln!(uart, "MSR:   {:016X}", mfmsr()).unwrap();
+        core::writeln!(uart, "HRMOR: {:016X}", hrmor).unwrap();
+        core::writeln!(uart, "RMOR:  {:016X}", unsafe { mfspr!(312) }).unwrap();
+        core::writeln!(uart, "LPCR:  {:016X}", lpcr).unwrap();
+        core::writeln!(uart, "LPIDR: {:016X}", unsafe { mfspr!(319) }).unwrap();
+        core::writeln!(uart, "PVR:   {:016X}", pvr).unwrap();
+        core::writeln!(uart, "HDEC:  {:016X}", unsafe { mfspr!(310) }).unwrap();
+        core::writeln!(uart, "DEC:   {:016X}", unsafe { mfspr!(22) }).unwrap();
+        core::writeln!(uart, "SRC:   {:016X}", src).unwrap();
+        core::writeln!(uart, "TOC:   {:016X}", toc).unwrap();
+        core::writeln!(uart, "SP:    {:016X}", sp).unwrap();
     });
 
     PROCESSORS.fetch_or(1 << pir, Ordering::Relaxed);
@@ -406,15 +422,15 @@ pub extern "C" fn __start_rust(pir: u64, src: u32, msr: u64, hrmor: u64, pvr: u6
         // Startup from OS (1)
         // HACK: Also going to apply this path for startup from ROM for development.
         0 | 1 => {
-            writeln!("Startup from OS.");
+            println!("Startup from OS.");
 
             // We'll need to catch all other cores that may still be running the OS.
             // Set a branch on the external interrupt vector, and trigger an IPI.
-            writeln!("Triggering IPI on all other cores.");
+            println!("Triggering IPI on all other cores.");
 
             // Loop...
             while PROCESSORS.load(Ordering::Relaxed) != 0x3F {
-                write!(
+                print!(
                     "Waiting for other processors... {:#?}  \r",
                     PROCESSORS.load(Ordering::Relaxed)
                 );
@@ -438,7 +454,7 @@ pub extern "C" fn __start_rust(pir: u64, src: u32, msr: u64, hrmor: u64, pvr: u6
                 xenon_cpu::time::delay(core::time::Duration::from_millis(100));
             }
 
-            writeln!("Processors captured.");
+            println!("Processors captured.");
         }
 
         // Shouldn't hit this case.
@@ -450,7 +466,7 @@ pub extern "C" fn __start_rust(pir: u64, src: u32, msr: u64, hrmor: u64, pvr: u6
         smc.set_led(true, 0xF0);
     });
 
-    writeln!("System captured.");
+    println!("System captured.");
 
     serial_terminal();
 

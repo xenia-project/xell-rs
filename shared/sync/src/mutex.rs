@@ -4,6 +4,7 @@ use core::{
 };
 
 /// This struct implements a naive spinlock that guards data contained within.
+#[repr(align(16))]
 pub struct SpinMutex<T> {
     lock_count: AtomicU32,
     inner: UnsafeCell<T>,
@@ -67,7 +68,9 @@ impl<T> SpinMutex<T> {
         let r = f(unsafe { &mut *self.inner.get() });
 
         // Release the lock.
-        self.lock_count.fetch_sub(1, Ordering::Release);
+        // We have to do this without lwarx/stwcx due to a processor race condition.
+        // This is probably safe(?)
+        self.lock_count.store(0, Ordering::Relaxed);
 
         r
     }

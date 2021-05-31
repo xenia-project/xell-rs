@@ -1,11 +1,10 @@
 //! This module defines exception handlers.
 
 use atomic::{Atomic, Ordering};
-use core::fmt::{self, Debug};
+use core::fmt::{self, Debug, Write};
 
 use crate::{smc, uart};
 
-use ufmt::{derive::*, uDebug};
 use xenon_cpu::mfspr;
 
 pub const EXCEPTION_VECTORS: [usize; 17] = [
@@ -29,7 +28,7 @@ pub const EXCEPTION_VECTORS: [usize; 17] = [
 ];
 
 #[allow(dead_code)]
-#[derive(Copy, Clone, Debug, uDebug)]
+#[derive(Copy, Clone, Debug)]
 #[non_exhaustive] // N.B: NECESSARY because we cast from integers.
 #[repr(u32)]
 pub enum ExceptionType {
@@ -52,46 +51,26 @@ pub enum ExceptionType {
 #[repr(C, align(512))]
 #[derive(Copy, Clone, Default)]
 pub struct CpuContext {
-    r: [u64; 32],
-    cr: u64,  // 0x100 (256)
-    lr: u64,  // 0x108 (264)
-    ctr: u64, // 0x110 (272)
-    pc: u64,  // 0x118 (280)
-    msr: u64, // 0x120 (288)
+    pub r: [u64; 32],
+    pub cr: u64,  // 0x100 (256)
+    pub lr: u64,  // 0x108 (264)
+    pub ctr: u64, // 0x110 (272)
+    pub pc: u64,  // 0x118 (280)
+    pub msr: u64, // 0x120 (288)
 }
 
 impl Debug for CpuContext {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> core::fmt::Result {
         core::writeln!(fmt, "r:")?;
         for i in 0..32 {
-            core::writeln!(fmt, "  {}: {}", i, self.r[i])?;
+            core::writeln!(fmt, "  {:>3}: {:016X}", i, self.r[i])?;
         }
 
-        core::writeln!(fmt, "cr: {}", self.cr)?;
-        core::writeln!(fmt, "lr: {}", self.lr)?;
-        core::writeln!(fmt, "ctr: {}", self.ctr)?;
-        core::writeln!(fmt, "pc: {}", self.pc)?;
-        core::writeln!(fmt, "msr: {}", self.msr)?;
-
-        Ok(())
-    }
-}
-
-impl uDebug for CpuContext {
-    fn fmt<W>(&self, fmt: &mut ufmt::Formatter<'_, W>) -> Result<(), W::Error>
-    where
-        W: ufmt::uWrite + ?Sized,
-    {
-        ufmt::uwriteln!(fmt, "r:")?;
-        for i in 0..32 {
-            ufmt::uwriteln!(fmt, "  {}: {}", i, self.r[i])?;
-        }
-
-        ufmt::uwriteln!(fmt, "cr: {}", self.cr)?;
-        ufmt::uwriteln!(fmt, "lr: {}", self.lr)?;
-        ufmt::uwriteln!(fmt, "ctr: {}", self.ctr)?;
-        ufmt::uwriteln!(fmt, "pc: {}", self.pc)?;
-        ufmt::uwriteln!(fmt, "msr: {}", self.msr)?;
+        core::writeln!(fmt, "cr: {:016X}", self.cr)?;
+        core::writeln!(fmt, "lr: {:016X}", self.lr)?;
+        core::writeln!(fmt, "ctr: {:016X}", self.ctr)?;
+        core::writeln!(fmt, "pc: {:016X}", self.pc)?;
+        core::writeln!(fmt, "msr: {:016X}", self.msr)?;
 
         Ok(())
     }
@@ -153,6 +132,50 @@ impl CpuContext {
             msr: 0x90000000_00001000,
         }
     }
+
+    pub const fn with_prcall(func: usize, r1: u64) -> Self {
+        Self {
+            r: [
+                0xBEBEBEBE_BEBEBEBE, // r0
+                r1,                  // r1
+                0xBEBEBEBE_BEBEBEBE, // r2
+                0xBEBEBEBE_BEBEBEBE, // r3
+                0xBEBEBEBE_BEBEBEBE, // r4
+                0xBEBEBEBE_BEBEBEBE, // r5
+                0xBEBEBEBE_BEBEBEBE, // r6
+                0xBEBEBEBE_BEBEBEBE, // r7
+                0xBEBEBEBE_BEBEBEBE, // r8
+                0xBEBEBEBE_BEBEBEBE, // r9
+                0xBEBEBEBE_BEBEBEBE, // r10
+                0xBEBEBEBE_BEBEBEBE, // r11
+                func as u64,         // r12
+                0xBEBEBEBE_BEBEBEBE, // r13
+                0xBEBEBEBE_BEBEBEBE, // r14
+                0xBEBEBEBE_BEBEBEBE, // r15
+                0xBEBEBEBE_BEBEBEBE, // r16
+                0xBEBEBEBE_BEBEBEBE, // r17
+                0xBEBEBEBE_BEBEBEBE, // r18
+                0xBEBEBEBE_BEBEBEBE, // r19
+                0xBEBEBEBE_BEBEBEBE, // r20
+                0xBEBEBEBE_BEBEBEBE, // r21
+                0xBEBEBEBE_BEBEBEBE, // r22
+                0xBEBEBEBE_BEBEBEBE, // r23
+                0xBEBEBEBE_BEBEBEBE, // r24
+                0xBEBEBEBE_BEBEBEBE, // r25
+                0xBEBEBEBE_BEBEBEBE, // r26
+                0xBEBEBEBE_BEBEBEBE, // r27
+                0xBEBEBEBE_BEBEBEBE, // r28
+                0xBEBEBEBE_BEBEBEBE, // r29
+                0xBEBEBEBE_BEBEBEBE, // r30
+                0xBEBEBEBE_BEBEBEBE, // r31
+            ],
+            cr: 0xBEBEBEBE_BEBEBEBE,
+            lr: 0xBEBEBEBE_BEBEBEBE,
+            ctr: 0xBEBEBEBE_BEBEBEBE,
+            pc: func as u64,
+            msr: 0x80000000_00001000,
+        }
+    }
 }
 
 /// This is a per-processor area where context information is saved when
@@ -166,7 +189,7 @@ static mut EXCEPTION_SAVE_AREA: [CpuContext; 6] = [CpuContext::new(); 6];
 static mut EXCEPTION_LOAD_AREA: [CpuContext; 6] = [CpuContext::new(); 6];
 
 /// The definition of the application-defined exception handler.
-pub type ExceptionHandler = fn(ExceptionType, &CpuContext) -> Result<(), ()>;
+pub type ExceptionHandler = fn(ExceptionType, &mut CpuContext) -> Result<(), ()>;
 
 /// The application-defined exception handler.
 static EXCEPTION_HANDLER: Atomic<Option<ExceptionHandler>> = Atomic::new(None);
@@ -201,14 +224,14 @@ extern "C" fn handle_exception() -> ! {
             let pir = unsafe { mfspr!(1023) };
 
             let closure = |uart: &mut uart::UART| {
-                ufmt::uwriteln!(uart, "UNHANDLED EXCEPTION! Hit exception vector {:?}", id)
+                core::writeln!(uart, "UNHANDLED EXCEPTION! Hit exception vector {:?}", id)
                     .unwrap();
-                ufmt::uwriteln!(uart, "MSR:   {:#?}", xenon_cpu::intrin::mfmsr()).unwrap();
-                ufmt::uwriteln!(uart, "PIR:   {:#?}", pir).unwrap();
-                ufmt::uwriteln!(uart, "---- Saved registers:").unwrap();
-                ufmt::uwriteln!(uart, "    MSR:   {:#?}", save_area.msr).unwrap();
-                ufmt::uwriteln!(uart, "    LR:    {:#?}", save_area.lr).unwrap();
-                ufmt::uwriteln!(uart, "    PC:    {:#?}", save_area.pc).unwrap();
+                core::writeln!(uart, "MSR:   {:#?}", xenon_cpu::intrin::mfmsr()).unwrap();
+                core::writeln!(uart, "PIR:   {:#?}", pir).unwrap();
+                core::writeln!(uart, "---- Saved registers:").unwrap();
+                core::writeln!(uart, "    MSR:   {:#?}", save_area.msr).unwrap();
+                core::writeln!(uart, "    LR:    {:#?}", save_area.lr).unwrap();
+                core::writeln!(uart, "    PC:    {:#?}", save_area.pc).unwrap();
             };
 
             // Attempt to lock the UART. If that fails (for example, because we took an exception
@@ -424,12 +447,12 @@ pub unsafe fn init_except(handler: Option<ExceptionHandler>) {
 
     // Set up the load area.
     EXCEPTION_LOAD_AREA = [
-        CpuContext::with_hvcall(handle_exception as usize, 0x8000_0000_1FFF_0000),
-        CpuContext::with_hvcall(handle_exception as usize, 0x8000_0000_1FFE_0000),
-        CpuContext::with_hvcall(handle_exception as usize, 0x8000_0000_1FFD_0000),
-        CpuContext::with_hvcall(handle_exception as usize, 0x8000_0000_1FFC_0000),
-        CpuContext::with_hvcall(handle_exception as usize, 0x8000_0000_1FFB_0000),
-        CpuContext::with_hvcall(handle_exception as usize, 0x8000_0000_1FFA_0000),
+        CpuContext::with_hvcall(handle_exception as usize, 0x8000_0000_1EFF_0000),
+        CpuContext::with_hvcall(handle_exception as usize, 0x8000_0000_1EFE_0000),
+        CpuContext::with_hvcall(handle_exception as usize, 0x8000_0000_1EFD_0000),
+        CpuContext::with_hvcall(handle_exception as usize, 0x8000_0000_1EFC_0000),
+        CpuContext::with_hvcall(handle_exception as usize, 0x8000_0000_1EFB_0000),
+        CpuContext::with_hvcall(handle_exception as usize, 0x8000_0000_1EFA_0000),
     ];
 
     // N.B: We have to patch the exception thunk to deal with PIE.
