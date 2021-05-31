@@ -70,7 +70,7 @@ impl<T> SpinMutex<T> {
         // Release the lock.
         // We have to do this without lwarx/stwcx due to a processor race condition.
         // This is probably safe(?)
-        self.lock_count.store(0, Ordering::Relaxed);
+        self.lock_count.store(0, Ordering::Release);
 
         r
     }

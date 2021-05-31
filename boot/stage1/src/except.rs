@@ -66,10 +66,10 @@ impl Debug for CpuContext {
             core::writeln!(fmt, "  {:>3}: {:016X}", i, self.r[i])?;
         }
 
-        core::writeln!(fmt, "cr: {:016X}", self.cr)?;
-        core::writeln!(fmt, "lr: {:016X}", self.lr)?;
+        core::writeln!(fmt, "cr:  {:016X}", self.cr)?;
+        core::writeln!(fmt, "lr:  {:016X}", self.lr)?;
         core::writeln!(fmt, "ctr: {:016X}", self.ctr)?;
-        core::writeln!(fmt, "pc: {:016X}", self.pc)?;
+        core::writeln!(fmt, "pc:  {:016X}", self.pc)?;
         core::writeln!(fmt, "msr: {:016X}", self.msr)?;
 
         Ok(())
@@ -129,11 +129,11 @@ impl CpuContext {
             lr: 0xBEBEBEBE_BEBEBEBE,
             ctr: 0xBEBEBEBE_BEBEBEBE,
             pc: func as u64,
-            msr: 0x90000000_00001000,
+            msr: 0x90000000_00001000, // MSR[SF/HV/ME]
         }
     }
 
-    pub const fn with_prcall(func: usize, r1: u64) -> Self {
+    pub const fn with_svcall(func: usize, r1: u64) -> Self {
         Self {
             r: [
                 0xBEBEBEBE_BEBEBEBE, // r0
@@ -173,7 +173,7 @@ impl CpuContext {
             lr: 0xBEBEBEBE_BEBEBEBE,
             ctr: 0xBEBEBEBE_BEBEBEBE,
             pc: func as u64,
-            msr: 0x80000000_00001000,
+            msr: 0x80000000_00001000, // MSR[SF/ME]
         }
     }
 }
@@ -201,6 +201,7 @@ extern "C" fn handle_exception() -> ! {
         unsafe { core::mem::transmute(mfspr!(304) as u32) } // HPSRG0
     };
 
+    // SAFETY: We have exclusive access to the save area corresponding to this processor.
     let save_area: &mut CpuContext = unsafe {
         let pir = mfspr!(1023);
         &mut EXCEPTION_SAVE_AREA[pir as usize]
@@ -216,59 +217,55 @@ extern "C" fn handle_exception() -> ! {
             }
         }
 
+        // Fallback and handle the exception here.
         None => {}
     }
 
-    match id {
-        _ => {
-            let pir = unsafe { mfspr!(1023) };
+    let pir = unsafe { mfspr!(1023) };
 
-            let closure = |uart: &mut uart::UART| {
-                core::writeln!(uart, "UNHANDLED EXCEPTION! Hit exception vector {:?}", id)
-                    .unwrap();
-                core::writeln!(uart, "MSR:   {:#?}", xenon_cpu::intrin::mfmsr()).unwrap();
-                core::writeln!(uart, "PIR:   {:#?}", pir).unwrap();
-                core::writeln!(uart, "---- Saved registers:").unwrap();
-                core::writeln!(uart, "    MSR:   {:#?}", save_area.msr).unwrap();
-                core::writeln!(uart, "    LR:    {:#?}", save_area.lr).unwrap();
-                core::writeln!(uart, "    PC:    {:#?}", save_area.pc).unwrap();
-            };
+    let closure = |uart: &mut uart::UART| {
+        core::writeln!(uart, "UNHANDLED EXCEPTION! Hit exception vector {:?}", id).unwrap();
+        core::writeln!(uart, "MSR:   {:#?}", xenon_cpu::intrin::mfmsr()).unwrap();
+        core::writeln!(uart, "PIR:   {:#?}", pir).unwrap();
+        core::writeln!(uart, "---- Saved registers:").unwrap();
+        core::writeln!(uart, "    MSR:   {:#?}", save_area.msr).unwrap();
+        core::writeln!(uart, "    LR:    {:#?}", save_area.lr).unwrap();
+        core::writeln!(uart, "    PC:    {:#?}", save_area.pc).unwrap();
+    };
 
-            // Attempt to lock the UART. If that fails (for example, because we took an exception
-            // while the UART was locked), forcibly take it to print out error text.
-            let res = {
-                let mut tries = 0u64;
+    // Attempt to lock the UART. If that fails (for example, because we took an exception
+    // while the UART was locked), forcibly take it to print out error text.
+    let res = {
+        let mut tries = 0u64;
 
-                loop {
-                    match uart::UART.try_lock(&closure) {
-                        Ok(_) => break Ok(()),
-                        Err(_) => {
-                            if tries > 50 {
-                                break Err(());
-                            }
-
-                            tries += 1;
-                            xenon_cpu::time::delay(core::time::Duration::from_millis(100));
-                        }
+        loop {
+            match uart::UART.try_lock(&closure) {
+                Ok(_) => break Ok(()),
+                Err(_) => {
+                    if tries > 50 {
+                        break Err(());
                     }
+
+                    tries += 1;
+                    xenon_cpu::time::delay(core::time::Duration::from_millis(100));
                 }
-            };
-
-            if res.is_err() {
-                let mut uart = unsafe { uart::UART.get_mut_unchecked() };
-                closure(&mut uart);
             }
-
-            if pir == 0 {
-                // Not good. Auto-reset the system.
-                smc::SMC.lock(|smc| {
-                    smc.send_message(&[0x82043000u32, 0x00000000u32, 0x00000000u32, 0x00000000u32]);
-                });
-            }
-
-            loop {}
         }
+    };
+
+    if res.is_err() {
+        let mut uart = unsafe { uart::UART.get_mut_unchecked() };
+        closure(&mut uart);
     }
+
+    if pir == 0 {
+        // Not good. Auto-reset the system.
+        smc::SMC.lock(|smc| {
+            smc.send_message(&[0x82043000u32, 0x00000000u32, 0x00000000u32, 0x00000000u32]);
+        });
+    }
+
+    loop {}
 }
 
 #[naked]

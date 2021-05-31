@@ -9,6 +9,7 @@
 #![no_std]
 #![no_main]
 
+use atomic::Atomic;
 use core::{
     fmt::Write,
     sync::atomic::{AtomicU32, AtomicUsize, Ordering},
@@ -254,8 +255,8 @@ fn serial_terminal() {
                 println!(";)");
             }
 
-            Some("boot") => {
-                println!("Booting...");
+            Some("exit") => {
+                println!("Goodbye!");
                 return;
             }
 
@@ -315,6 +316,25 @@ fn startup_exception_handler(ex: ExceptionType, ctx: &mut except::CpuContext) ->
     }
 }
 
+fn normal_exception_handler(_ex: ExceptionType, _ctx: &mut except::CpuContext) -> Result<(), ()> {
+    Err(())
+}
+
+fn exception_handler(ex: ExceptionType, ctx: &mut except::CpuContext) -> Result<(), ()> {
+    match EXCEPTION_HANDLER_MODE.load(Ordering::Relaxed) {
+        ExceptionMode::Startup => startup_exception_handler(ex, ctx),
+        ExceptionMode::Normal => normal_exception_handler(ex, ctx),
+    }
+}
+
+#[derive(Clone, Copy)]
+enum ExceptionMode {
+    Startup,
+    Normal,
+}
+
+static EXCEPTION_HANDLER_MODE: Atomic<ExceptionMode> = Atomic::new(ExceptionMode::Startup);
+
 fn thread_entry() -> ! {
     let pir = xenon_cpu::intrin::pir();
     PROCESSORS.fetch_or(1 << pir, Ordering::Relaxed);
@@ -332,9 +352,13 @@ pub extern "C" fn __start_rust(
     pvr: u64,
     lpcr: u64,
 ) -> ! {
-    // Clear out the relocation routine written by startup.s
     unsafe {
+        // Clear out the relocation routine written by startup.s
         core_reqs::memset(0x8000_0000_0000_0000 as *mut u8, 0x00, 0x100);
+
+        // Disable all checkstops.
+        // Default: 0x07FFA7FE00000000
+        core::ptr::write_volatile(0x8000_0200_0006_1060 as *mut u64, 0x0000_07FF_0000_0000);
     }
 
     uart::UART.lock(|uart| {
@@ -371,9 +395,9 @@ pub extern "C" fn __start_rust(
         core::writeln!(uart, "PVR:   {:016X}", pvr).unwrap();
         core::writeln!(uart, "HDEC:  {:016X}", unsafe { mfspr!(310) }).unwrap();
         core::writeln!(uart, "DEC:   {:016X}", unsafe { mfspr!(22) }).unwrap();
-        core::writeln!(uart, "SRC:   {:016X}", src).unwrap();
         core::writeln!(uart, "TOC:   {:016X}", toc).unwrap();
         core::writeln!(uart, "SP:    {:016X}", sp).unwrap();
+        core::writeln!(uart, "SRC:   {:016X}", src).unwrap();
     });
 
     PROCESSORS.fetch_or(1 << pir, Ordering::Relaxed);
@@ -390,7 +414,7 @@ pub extern "C" fn __start_rust(
     }
 
     unsafe {
-        except::init_except(Some(startup_exception_handler));
+        except::init_except(Some(exception_handler));
     }
 
     serial_terminal();
@@ -431,7 +455,7 @@ pub extern "C" fn __start_rust(
             // Loop...
             while PROCESSORS.load(Ordering::Relaxed) != 0x3F {
                 print!(
-                    "Waiting for other processors... {:#?}  \r",
+                    "Waiting for other processors... {:02X}  \r",
                     PROCESSORS.load(Ordering::Relaxed)
                 );
 
@@ -448,10 +472,10 @@ pub extern "C" fn __start_rust(
                     }
 
                     // Trigger an IPI on all other processors, with vector 0x78.
-                    core::ptr::write_volatile(0x8000_0200_0005_0010 as *mut u64, 0x003E_0078);
+                    core::ptr::write_volatile(0x8000_0200_0005_0010 as *mut u64, 0x003F_007C);
                 }
 
-                xenon_cpu::time::delay(core::time::Duration::from_millis(100));
+                xenon_cpu::time::delay(core::time::Duration::from_secs(1));
             }
 
             println!("Processors captured.");
@@ -466,6 +490,7 @@ pub extern "C" fn __start_rust(
         smc.set_led(true, 0xF0);
     });
 
+    EXCEPTION_HANDLER_MODE.store(ExceptionMode::Normal, Ordering::Relaxed);
     println!("System captured.");
 
     serial_terminal();

@@ -4,10 +4,10 @@ use crate::intrin::mftb;
 use core::time::Duration;
 
 fn tdelay(time: u128) {
-    let tgt = time.saturating_add(mftb() as u128) as u64;
+    let tgt = time.saturating_add(mftb() as u128);
     while mftb() < tgt {}
 }
 
 pub fn delay(length: Duration) {
-    tdelay((length.as_micros() * TIMEBASE_FREQ as u128) / 1000000);
+    tdelay((length.as_nanos() * TIMEBASE_FREQ as u128) / 1_000_000_000);
 }

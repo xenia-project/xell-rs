@@ -1,11 +1,29 @@
 #[inline]
-pub fn mftb() -> u64 {
-    let tb;
-    unsafe {
-        asm!("mftb {}", out(reg) tb);
+pub fn mftb() -> u128 {
+    let mut tbu: u64;
+    let mut tbl: u64;
+    let mut tbu2: u64;
+
+    loop {
+        unsafe {
+            asm!(
+                "mftbu {0}",
+                "mftb {1}",
+                "mftbu {2}",
+
+                out(reg) tbu,
+                out(reg) tbl,
+                out(reg) tbu2,
+            );
+        }
+
+        // Finished loading if the upper timebase did not change.
+        if tbu == tbu2 {
+            break;
+        }
     }
 
-    tb
+    (tbu as u128) << 64 | tbl as u128
 }
 
 #[inline]
