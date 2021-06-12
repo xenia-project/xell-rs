@@ -302,10 +302,10 @@ p_toc:  .8byte  __toc_start + 0x8000 - 0b
 // R5 = clobber
 // R6 = clobber
 // R7 = clobber
-// R10 = clobber
-// R11 = clobber
+// R8 = clobber (LR save)
+// R9 = clobber (relocate_memmove)
 relocate:
-	mflr 	%r10
+	mflr 	%r8
 
 	// Load the TOC.
 	bl		load_toc
@@ -317,7 +317,7 @@ relocate:
 	addi	%r4, %r3, __relocate_memmove_start - 0b
 	lis		%r3, 0x8000
 	sldi	%r3, %r3, 32
-	mr		%r11, %r3
+	mr		%r9, %r3
 	li		%r5, __relocate_memmove_end - __relocate_memmove_start
 	bl		relocate_memmove
 
@@ -332,7 +332,7 @@ relocate:
 	sub		%r4, %r3, %r2
 
 	// Relocate the return address.
-	add		%r10, %r10, %r4
+	add		%r8, %r8, %r4
 
 	// R3 = DST
 	lis		%r3, _start@highest
@@ -347,9 +347,9 @@ relocate:
 	// R5 = LEN
 	lis		%r5, 0x1
 
-	// Restore the return address.
-	mtlr	%r10
-	mtctr	%r11
+	// Restore the return address, and branch to the relocation memmove.
+	mtlr	%r8
+	mtctr	%r9
 	bctr
 
 __relocate_memmove_start:
@@ -359,6 +359,7 @@ __relocate_memmove_start:
 // R5 = len
 // R6 = clobber
 // R7 = clobber
+// This routine is purposefully kept compatible with the SysV calling ABI.
 relocate_memmove:
 	cmpld	%r3, %r4
 	bge 	forward
