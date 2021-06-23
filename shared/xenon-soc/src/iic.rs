@@ -8,6 +8,8 @@ enum Register {
     WhoAmI = 0x00,
     CurrentTaskPriority = 0x08,
     IpiDispatch = 0x10,
+    ActiveIrqs = 0x20,
+    AssertedIrqs = 0x28,
     Ack = 0x50,
     AckPri = 0x58,
     Eoi = 0x60,

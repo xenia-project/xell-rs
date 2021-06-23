@@ -20,6 +20,7 @@ impl UART {
         Self {}
     }
 
+    /// Reset the UART controller with the specified speed.
     pub fn reset(&mut self, speed: Speed) {
         unsafe {
             core::ptr::write_volatile(

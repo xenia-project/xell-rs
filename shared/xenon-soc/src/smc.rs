@@ -23,6 +23,10 @@ impl SMC {
         }
     }
 
+    pub fn restart_system(&mut self) {
+        self.send_message(&[0x82043000u32, 0x00000000u32, 0x00000000u32, 0x00000000u32]);
+    }
+
     /// Start the boot animation on the front LED panel.
     pub fn start_led_bootanim(&mut self) {
         let buf: [u32; 4] = [0x8C010000, 0x00000000, 0x00000000, 0x00000000];

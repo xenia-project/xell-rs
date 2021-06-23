@@ -5,6 +5,8 @@ use xenon_soc::uart;
 #[lang = "eh_personality"]
 extern "C" fn rust_eh_personality() {}
 
+/// This is the global Rust panic handler.
+/// Currently it does nothing, though eventually it should print a backtrace.
 #[panic_handler]
 #[no_mangle]
 pub fn panic(_info: &PanicInfo) -> ! {

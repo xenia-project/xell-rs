@@ -439,6 +439,13 @@ pub unsafe fn cause_exception() -> ! {
     asm!("trap", options(noreturn));
 }
 
+/// This function initializes the exception handler subsystem.
+///
+/// # Safety
+/// This function should only be called once during startup.
+/// This will place jump stubs at the PowerPC exception vectors.
+///
+/// Unsafe for obvious reasons.
 pub unsafe fn init_except(handler: Option<ExceptionHandler>) {
     EXCEPTION_HANDLER.store(handler, Ordering::Relaxed);
 
