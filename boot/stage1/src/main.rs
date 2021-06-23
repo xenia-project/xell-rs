@@ -1,6 +1,8 @@
 #![feature(
+    alloc_error_handler,
     const_raw_ptr_to_usize_cast,
     const_panic,
+    const_ptr_offset_from,
     global_asm,
     lang_items,
     naked_functions,
@@ -20,9 +22,10 @@ use xenon_cpu::{
 };
 use xenon_soc::{smc, uart};
 
+extern crate alloc;
 extern crate core_reqs;
 
-// mod gdb;
+mod glballoc;
 mod except;
 mod panic;
 
