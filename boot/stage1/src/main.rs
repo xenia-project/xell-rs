@@ -21,6 +21,7 @@ use xenon_cpu::{
     mfspr,
 };
 use xenon_soc::{smc, uart};
+use crate::util::bit;
 
 extern crate alloc;
 extern crate core_reqs;
@@ -28,6 +29,7 @@ extern crate core_reqs;
 mod glballoc;
 mod except;
 mod panic;
+mod util;
 
 use except::ExceptionType;
 
@@ -49,59 +51,6 @@ macro_rules! print {
             core::write!(&mut uart, $($tts)*).unwrap();
         });
     };
-}
-
-#[allow(dead_code)]
-const fn bit(b: u64) -> u64 {
-    0x8000_0000_0000_0000 >> b
-}
-
-#[allow(dead_code)]
-const fn make_longjmp(target: usize, p1: u64) -> [u32; 17] {
-    [
-        (0x3C600000 | ((target >> 48) & 0xFFFF)) as u32, // lis     %r3, target[64:48]
-        (0x60630000 | ((target >> 32) & 0xFFFF)) as u32, // ori     %r3, %r3, target[48:32]
-        0x786307C6,                                      // rldicr  %r3, %r3, 32, 31
-        (0x64630000 | ((target >> 16) & 0xFFFF)) as u32, // oris    %r3, %r3, target[32:16]
-        (0x60630000 | ((target >> 00) & 0xFFFF)) as u32, // ori     %r3, %r3, target[16:0]
-        0x7C7A03A6,                                      // mtsrr0  %r3
-        // Clear MSR[EE/IR/DR]
-        0x3c800000, // lis      %r4, 0x0000
-        0x60848030, // ori      %r4, %r4, 0x8030
-        0x7C6000A6, // mfmsr    %r3
-        0x7C632078, // andc     %r3, %r3, %r4
-        0x7C7B03A6, // mtsrr1   %r3
-        // Load the parameter.
-        (0x3C600000 | ((p1 >> 48) & 0xFFFF)) as u32, // lis     %r3, p1[64:48]
-        (0x60630000 | ((p1 >> 32) & 0xFFFF)) as u32, // ori     %r3, %r3, p1[48:32]
-        0x786307C6,                                  // rldicr  %r3, %r3, 32, 31
-        (0x64630000 | ((p1 >> 16) & 0xFFFF)) as u32, // oris    %r3, %r3, p1[32:16]
-        (0x60630000 | ((p1 >> 00) & 0xFFFF)) as u32, // ori     %r3, %r3, p1[16:0]
-        // Branch to target.
-        0x4C000024, // rfid
-    ]
-}
-
-#[allow(dead_code)]
-const fn abs_diff(a: usize, b: usize) -> usize {
-    if a > b {
-        a - b
-    } else {
-        b - a
-    }
-}
-
-#[allow(dead_code)]
-const fn make_reljump(address: usize, target: usize) -> u32 {
-    let diff = abs_diff(target, address);
-    let offset = target.wrapping_sub(address);
-
-    // If the offset can fit within a single branch instruction, use it.
-    if diff < 0x7F_FFFF {
-        (0x4800_0000 | (offset & 0x00FF_FFFC)) as u32
-    } else {
-        panic!("Offset too large for relative jump!");
-    }
 }
 
 fn read_line(uart: &mut uart::UART, line: &mut [u8]) -> usize {
@@ -290,8 +239,7 @@ fn startup_exception_handler(ex: ExceptionType, ctx: &mut except::CpuContext) ->
     });
 
     // Branch to thread entry.
-    let context =
-        except::CpuContext::with_hvcall(thread_entry as usize, 0x8000_0000_1E00_0000 - (pir << 16));
+    let context = except::CpuContext::with_hvcall(cpu_startup, 0x8000_0000_1E00_0000 - (pir << 16));
     unsafe {
         except::load_context(&context);
     }
@@ -320,7 +268,7 @@ enum ExceptionMode {
 
 static EXCEPTION_HANDLER_MODE: Atomic<ExceptionMode> = Atomic::new(ExceptionMode::Startup);
 
-fn thread_entry() -> ! {
+extern "C" fn cpu_startup() -> ! {
     let pir = xenon_cpu::intrin::pir();
     PROCESSORS.fetch_or(1 << pir, Ordering::Relaxed);
 
@@ -332,13 +280,11 @@ fn thread_entry() -> ! {
         mtmsrl(bit(48));
     }
 
-    if pir == 0 {
-        serial_terminal();
+    cpu_idle();
+}
 
-        smc::SMC.lock(|smc| {
-            smc.restart_system();
-        });
-    }
+fn cpu_idle() -> ! {
+    let pir = xenon_cpu::intrin::pir();
 
     loop {}
 }
@@ -482,8 +428,7 @@ pub extern "C" fn __start_rust(
     PROCESSORS.fetch_or(1 << pir, Ordering::Relaxed);
 
     // Branch to thread entry.
-    let context =
-        except::CpuContext::with_hvcall(thread_entry as usize, 0x8000_0000_1E00_0000 - (pir << 16));
+    let context = except::CpuContext::with_hvcall(cpu_startup, 0x8000_0000_1E00_0000 - (pir << 16));
     unsafe {
         except::load_context(&context);
     }

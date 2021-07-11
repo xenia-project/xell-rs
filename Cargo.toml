@@ -5,8 +5,8 @@ members = [
     "boot/stage1",
     "shared/core_reqs",
     "shared/xenon-cpu",
+    # "shared/xenon-enet",
     "shared/xenon-soc",
     "shared/sync",
-    # "shared/xenon-enet",
 ]
 

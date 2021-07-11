@@ -3,7 +3,7 @@
 use atomic::{Atomic, Ordering};
 use core::fmt::{self, Debug, Write};
 
-use crate::{smc, uart};
+use crate::{smc, uart, util::make_arithaddr};
 
 use xenon_cpu::mfspr;
 
@@ -89,7 +89,7 @@ impl CpuContext {
         }
     }
 
-    pub const fn with_hvcall(func: usize, r1: u64) -> Self {
+    pub fn with_hvcall(func: extern "C" fn() -> !, r1: u64) -> Self {
         Self {
             r: [
                 0xBEBEBEBE_BEBEBEBE, // r0
@@ -133,7 +133,7 @@ impl CpuContext {
         }
     }
 
-    pub const fn with_svcall(func: usize, r1: u64) -> Self {
+    pub fn with_svcall(func: extern "C" fn() -> !, r1: u64) -> Self {
         Self {
             r: [
                 0xBEBEBEBE_BEBEBEBE, // r0
@@ -420,20 +420,6 @@ const fn make_longjmp_exc(id: u16, target: usize) -> [u32; 11] {
     ]
 }
 
-/// Create an address suitable for loading using signed arithmetic,
-/// i.e:
-///
-/// ```asm
-/// lis %rX, <addr>@ha
-/// addi %rX, <addr>@l
-/// ```
-const fn make_arithaddr(addr: u32) -> (u16, u16) {
-    let lo = (addr & 0xFFFF) as u16;
-    let hi = { ((addr >> 16) as u16) + if (lo & 0x8000) != 0 { 1 } else { 0 } };
-
-    (hi, lo)
-}
-
 pub unsafe fn cause_exception() -> ! {
     // Trap.
     asm!("trap", options(noreturn));
@@ -451,12 +437,12 @@ pub unsafe fn init_except(handler: Option<ExceptionHandler>) {
 
     // Set up the load area.
     EXCEPTION_LOAD_AREA = [
-        CpuContext::with_hvcall(handle_exception as usize, 0x8000_0000_1EFF_0000),
-        CpuContext::with_hvcall(handle_exception as usize, 0x8000_0000_1EFE_0000),
-        CpuContext::with_hvcall(handle_exception as usize, 0x8000_0000_1EFD_0000),
-        CpuContext::with_hvcall(handle_exception as usize, 0x8000_0000_1EFC_0000),
-        CpuContext::with_hvcall(handle_exception as usize, 0x8000_0000_1EFB_0000),
-        CpuContext::with_hvcall(handle_exception as usize, 0x8000_0000_1EFA_0000),
+        CpuContext::with_hvcall(handle_exception, 0x8000_0000_1EFF_0000),
+        CpuContext::with_hvcall(handle_exception, 0x8000_0000_1EFE_0000),
+        CpuContext::with_hvcall(handle_exception, 0x8000_0000_1EFD_0000),
+        CpuContext::with_hvcall(handle_exception, 0x8000_0000_1EFC_0000),
+        CpuContext::with_hvcall(handle_exception, 0x8000_0000_1EFB_0000),
+        CpuContext::with_hvcall(handle_exception, 0x8000_0000_1EFA_0000),
     ];
 
     // N.B: We have to patch the exception thunk to deal with PIE.
