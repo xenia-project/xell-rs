@@ -10,6 +10,6 @@ core_reqs = { path = "../../shared/core_reqs" }
 xenon-cpu = { path = "../../shared/xenon-cpu" }
 xenon-soc = { path = "../../shared/xenon-soc" }
 sync = { path = "../../shared/sync" }
-atomic = "0.5.0"
 
-buddyalloc = { git = "https://github.com/DrChat/buddyalloc.git" }
+atomic = "0.5.0"
+buddyalloc = "0.1.5"

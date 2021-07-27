@@ -10,7 +10,6 @@
     "executables": true,
     "has-elf-tls": true,
     "has-rpath": true,
-    "is-builtin": true,
     "linker": "rust-lld",
     "linker-flavor": "ld.lld",
     "linker-is-gnu": true,
