@@ -114,6 +114,11 @@ impl<S: RingType, const N: usize> Ring<S, N> {
             }
         }
     }
+
+    /// Return the physical base pointer of this ring.
+    pub fn phys_base(&self) -> usize {
+        self.hw_descriptors.as_ptr() as usize
+    }
 }
 
 unsafe fn read_mod_write_volatile<T>(addr: *mut T, func: impl FnOnce(T) -> T) {

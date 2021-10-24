@@ -55,6 +55,16 @@ impl Default for EthernetBuffer {
     }
 }
 
+#[repr(C, packed)]
+struct MacAddress([u8; 6]);
+
+impl From<u64> for MacAddress {
+    fn from(n: u64) -> Self {
+        let bytes = n.to_be_bytes();
+        Self(bytes[2..].try_into().unwrap())
+    }
+}
+
 /// Transfer descriptor, as defined by hardware.
 ///
 /// Descriptors can follow the following state machine:
@@ -135,25 +145,60 @@ impl<const N: usize, const M: usize> EthernetDevice<N, M> {
         unsafe { core::ptr::read_volatile(self.mmio.as_ptr().offset(reg as isize) as *mut T) }
     }
 
-    pub fn reset(&mut self) {
+    fn reset(&mut self) {
+        // N.B: The magic numbers are from:
+        // https://github.com/xenia-project/linux/blob/8b3cd8b6e99453ad854a5441092ed87b70385f37/drivers/net/ethernet/xenon/xenon_net.c#L370-L438
+
         // Zero out the interrupt mask.
         self.write(Register::InterruptMask, 0x00000000);
 
-        self.write(Register::Config0, 0x08558001);
+        // Reset the chip.
+        self.write(Register::Config0, 0x0855_8001);
         xenon_cpu::time::delay(Duration::from_micros(100));
-        self.write(Register::Config0, 0x08550001);
+        self.write(Register::Config0, 0x0855_0001);
 
         self.write(Register::PhyControl, 0x00000004);
         xenon_cpu::time::delay(Duration::from_micros(100));
-        self.write(Register::PhyControl, 0x00000004);
+        self.write(Register::PhyControl, 0x00000000);
 
-        self.write(Register::MaxPacketSize, 1522);
+        self.write(Register::MaxPacketSize, 1522u32);
 
         self.write(Register::Config1, 0x2360);
 
         self.write(Register::MulticastFilterControl, 0x0E38);
 
-        // TODO: MAC address
+        self.write(Register::Address0, MacAddress::from(0x69_42_00_00_00_00));
+        self.write(Register::Address1, MacAddress::from(0x69_42_00_00_00_01));
+
+        self.write(Register::TxConfig, 0x0000_1C00);
+        self.write(Register::RxConfig, 0x0010_1C00);
+
+        self.write(Register::PhyConfig, 0x0400_1901);
+
+        // Write out the TX descriptor ring base 0.
+        self.write(Register::TxConfig, 0x0000_1C00);
+        self.write(Register::TxDescriptorBase, self.tx_ring.phys_base() as u32);
+        
+        // Write out the TX descriptor ring base 1.
+        // FIXME: The originating implementation was hacked together. Why do they use the same ring twice?
+        self.write(Register::TxConfig, 0x0001_1C00);
+        self.write(Register::TxDescriptorBase, self.tx_ring.phys_base() as u32);
+        self.write(Register::TxConfig, 0x0000_1C00);
+
+        // Write out the RX descriptor ring base.
+        self.write(Register::RxDescriptorBase, self.rx_ring.phys_base() as u32);
+
+        // ???
+        self.write(Register::PhyConfig, 0x0400_1001);
+        self.write(Register::Config1, 0u32);
+        self.write(Register::Config0, 0x0855_0001);
+
+        // Enable RX/TX
+        self.write(Register::TxConfig, 0x0000_1C01);
+        self.write(Register::RxConfig, 0x0010_1C11);
+
+        // Disable all interrupts.
+        self.write(Register::InterruptMask, 0x0000_0000);
     }
 }
 
