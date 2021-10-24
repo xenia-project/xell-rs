@@ -1,9 +1,14 @@
 #![no_std]
 #![feature(iter_zip)]
 
-pub mod ring;
+mod ring;
 
-use core::{marker::PhantomData, pin::Pin, ptr::NonNull, sync::atomic::AtomicU32, time::Duration};
+extern crate alloc;
+
+use ring::{Ring, RxRing, TxRing};
+
+use alloc::boxed::Box;
+use core::{ptr::NonNull, time::Duration};
 use smoltcp::phy::{self, Device};
 
 #[allow(dead_code)]
@@ -30,21 +35,25 @@ enum Register {
     Address1 = 0x7A,
 }
 
-/// The type of a transmission ring.
-pub enum RingType {
-    Rx,
-    Tx,
-}
-
 // Flag bit guesses:
 // 0x8000_0000: Hardware ownership bit
 // 0x4000_0000: ??
-// 0x0020_0000: (TX) last buffer?
+// 0x0020_0000: (TX) last buffer? e.g. packet not split
 // 0x0002_0000: (TX) interrupt related?
 // 0x0001_0000: (TX) interrupt related?
 
 const HWDESC_FLAG_HW_OWNED: u32 = 0x80000000;
-const HWDESC_LAST_ENTRY: u32 = 0x80000000; // N.B: This is set in the `capacity` field.
+const HWDESC_CAP_LAST_ENTRY: u32 = 0x80000000; // N.B: This is set in the `capacity` field.
+
+#[repr(C, align(2048))]
+#[derive(Clone)]
+pub struct EthernetBuffer([u8; 2048]);
+
+impl Default for EthernetBuffer {
+    fn default() -> Self {
+        Self([0u8; 2048])
+    }
+}
 
 /// Transfer descriptor, as defined by hardware.
 ///
@@ -56,18 +65,25 @@ const HWDESC_LAST_ENTRY: u32 = 0x80000000; // N.B: This is set in the `capacity`
 ///  * Busy: Owned by hardware; pending packet RX
 /// * TX
 ///  * Free: Descriptor is free for queueing a network TX.
+///   * Transmitted packet contained within; can free buffer.
+///   * No transmit buffer set.
 ///  * Busy: Owned by hardware; pending packet TX
 #[repr(C, align(16))]
 #[derive(Clone, Copy)]
 struct HwDescriptor {
+    /// Length of the packet contained within `addr`, if any.
     len: u32,
+    /// Flags interpreted by the hardware, such as an ownership bit or interrupt
+    /// routing bits.
     flags: u32,
+    /// Physical address of an in-memory buffer used to contain the packet.
     addr: u32,
+    /// Capacity of the in-memory buffer, with the high bit aliased as an "end-of-ring" bit.
     capacity: u32,
 }
 
 impl HwDescriptor {
-    pub fn new() -> Self {
+    fn new() -> Self {
         Self {
             len: 0,
             flags: 0,
@@ -76,8 +92,9 @@ impl HwDescriptor {
         }
     }
 
-    pub fn is_free(&self) -> bool {
-        (self.flags & HWDESC_FLAG_HW_OWNED) == 0
+    /// Query to see if this descriptor is currently busy (owned by hardware) at this point in time.
+    fn is_busy(&self) -> bool {
+        (unsafe { core::ptr::read_volatile(&self.flags) } & HWDESC_FLAG_HW_OWNED) != 0
     }
 }
 
@@ -85,8 +102,8 @@ impl HwDescriptor {
 pub struct EthernetDevice<const N: usize, const M: usize> {
     mmio: core::ptr::NonNull<u8>,
 
-    rx_ring: ring::Ring<ring::RxRing, N>,
-    tx_ring: ring::Ring<ring::TxRing, M>,
+    rx_ring: Ring<RxRing, N>,
+    tx_ring: Ring<TxRing, M>,
 }
 
 impl<const N: usize, const M: usize> EthernetDevice<N, M> {
@@ -94,15 +111,12 @@ impl<const N: usize, const M: usize> EthernetDevice<N, M> {
     ///
     /// SAFETY: The caller _MUST_ ensure that there is only one instance
     /// of this object at a time. Multiple instances will cause undefined behavior.
-    pub unsafe fn new(
-        rx_ring: ring::Ring<ring::RxRing, N>,
-        tx_ring: ring::Ring<ring::TxRing, M>,
-    ) -> Self {
+    pub unsafe fn new() -> Self {
         let mut obj = Self {
             mmio: NonNull::new_unchecked(0x8000_0200_EA00_1400 as *mut u8),
 
-            rx_ring,
-            tx_ring,
+            rx_ring: Ring::new(),
+            tx_ring: Ring::new(),
         };
 
         obj.reset();
@@ -143,17 +157,48 @@ impl<const N: usize, const M: usize> EthernetDevice<N, M> {
     }
 }
 
-/*
-impl<'a> Device<'a> for EthernetDevice {
-    type RxToken = EthernetRxToken<'a>;
-    type TxToken = EthernetTxToken<'a>;
+/// Represents a token that, when consumed, yields a received packet.
+pub struct EthernetRxToken<'ring, const N: usize>(ring::CompleteDescriptor<'ring, ring::RxRing, N>);
 
-    fn receive(&'a mut self) -> Option<(Self::RxToken, Self::TxToken)> {
-        None
+/// Represents a token that, when consumed, takes ownership of a buffer containing a packet to be sent.
+pub struct EthernetTxToken<'ring, const M: usize>(ring::FreeDescriptor<'ring, ring::TxRing, M>);
+
+// Implement the smoltcp interface to the Xenon ethernet device.
+impl<'dev, const N: usize, const M: usize> Device<'dev> for EthernetDevice<N, M> {
+    type RxToken = EthernetRxToken<'dev, N>;
+    type TxToken = EthernetTxToken<'dev, M>;
+
+    fn receive(&'dev mut self) -> Option<(Self::RxToken, Self::TxToken)> {
+        // Free up completed TX descriptors.
+        while let Some(desc) = self.tx_ring.get_next_complete() {
+            // Free the desc, drop the inner buffer. Maybe attempt to reuse it in the future.
+            desc.free();
+        }
+
+        // Requeue free RX descriptors.
+        while let Some(desc) = self.rx_ring.get_next_free() {
+            let buf = Box::new(EthernetBuffer::default());
+
+            // Submit the descriptor back to hardware.
+            desc.submit(buf);
+        }
+
+        Some((
+            EthernetRxToken(self.rx_ring.get_next_complete()?),
+            EthernetTxToken(self.tx_ring.get_next_free()?),
+        ))
     }
 
-    fn transmit(&'a mut self) -> Option<Self::TxToken> {
-        None
+    fn transmit(&'dev mut self) -> Option<Self::TxToken> {
+        // Free up completed TX descriptors.
+        while let Some(desc) = self.tx_ring.get_next_complete() {
+            // Free the desc, drop the inner buffer. Maybe attempt to reuse it in the future.
+            desc.free();
+        }
+
+        // Now try to get the next free entry again. In most cases, it will point to an
+        // entry we just freed.
+        Some(EthernetTxToken(self.tx_ring.get_next_free()?))
     }
 
     fn capabilities(&self) -> smoltcp::phy::DeviceCapabilities {
@@ -166,26 +211,31 @@ impl<'a> Device<'a> for EthernetDevice {
     }
 }
 
-impl<'a> phy::RxToken for EthernetRxToken<'a> {
-    fn consume<R, F>(self, timestamp: smoltcp::time::Instant, f: F) -> smoltcp::Result<R>
+impl<'a, const N: usize> phy::RxToken for EthernetRxToken<'a, N> {
+    fn consume<R, F>(self, _timestamp: smoltcp::time::Instant, f: F) -> smoltcp::Result<R>
     where
         F: FnOnce(&mut [u8]) -> smoltcp::Result<R>,
     {
-        todo!()
+        let (mut buf, len) = self.0.free();
+        f(&mut buf.0[..len])
     }
 }
 
-impl<'a> phy::TxToken for EthernetTxToken<'a> {
+impl<'a, const M: usize> phy::TxToken for EthernetTxToken<'a, M> {
     fn consume<R, F>(
         self,
-        timestamp: smoltcp::time::Instant,
+        _timestamp: smoltcp::time::Instant,
         len: usize,
         f: F,
     ) -> smoltcp::Result<R>
     where
         F: FnOnce(&mut [u8]) -> smoltcp::Result<R>,
     {
-        todo!()
+        let mut buf = Box::new(EthernetBuffer::default());
+        let res = f(&mut buf.0[..len])?;
+
+        self.0.submit(buf, len);
+
+        Ok(res)
     }
 }
-*/

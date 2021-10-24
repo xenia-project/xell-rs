@@ -1,12 +1,12 @@
 [package]
 name = "xenon-enet"
 version = "0.1.0"
-edition = "2018"
+edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-smoltcp = { version = "0.7.3", default-features = false, features = [
+smoltcp = { version = "0.7.5", default-features = false, features = [
     "log", "proto-ipv4", "proto-ipv6"
 ] }
 

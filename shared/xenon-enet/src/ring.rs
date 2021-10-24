@@ -1,102 +1,242 @@
+//! This module contains code for ethernet ring management.
+
 use super::{EthernetBuffer, HwDescriptor};
-use core::marker::PhantomData;
+use core::{marker::PhantomData, sync::atomic::Ordering};
 
-pub struct EthernetPendingDesc<'a>(&'a mut HwDescriptor, &'a mut [u8]);
+extern crate alloc;
+use alloc::boxed::Box;
 
-pub struct EthernetDescBuilder<'a>(&'a mut HwDescriptor, &'a mut [u8]);
+/// An individual "logical" descriptor, used to track extra information
+/// associated with hardware descriptors.
+#[derive(Default, Clone)]
+struct LogicalDescriptor {
+    /// The managed heap buffer assigned to this descriptor, if any.
+    buf: Option<Box<EthernetBuffer>>,
+}
 
-impl<'a> EthernetDescBuilder<'a> {
-    fn new(desc: &'a mut HwDescriptor, buf: &'static mut [u8]) -> Self {
-        desc.capacity = (desc.capacity & 0x80000000) | ((buf.len() as u32) & 0x7FFFFFFF);
-        desc.addr = buf.as_mut_ptr() as u32;
-
-        Self(desc, buf)
-    }
-
-    pub fn set_flags(self, flags: u32) -> Self {
-        self.0.flags = flags;
-
-        self
-    }
-
-    pub fn commit(self) -> EthernetPendingDesc<'a> {
-        self.0.flags |= super::HWDESC_FLAG_HW_OWNED;
-        EthernetPendingDesc(self.0, self.1)
+impl core::fmt::Debug for LogicalDescriptor {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("LogicalDescriptor")
+            .field("buf", &self.buf.is_some())
+            .finish()
     }
 }
 
-/// Represents an ethernet descriptor that has pending data.
-pub struct EthernetCompleteDesc<'a>(&'a mut HwDescriptor);
+pub trait RingType {}
 
 /// Receive ring marker
 pub struct RxRing;
 /// Transfer ring marker
 pub struct TxRing;
 
-trait RingType {}
 impl RingType for RxRing {}
 impl RingType for TxRing {}
 
 /// This structure represents a ring of DMA buffer descriptors for a Xenon MAC.
 ///
-/// # Usage (RX)
-/// ```rust,ignore
-/// let mut ring: Ring<RxRing, 16>;
+/// # Hardware interaction
+/// Hardware and software may both access descriptors in the ring at the same time.
 ///
-/// match ring.next_free() {
-///   Some(desc) => {},
-///   None => {}
-/// }
-/// ```
-pub struct Ring<T: RingType, const N: usize> {
-    ring_type: PhantomData<T>,
+/// When a descriptor is ready for hardware processing, the ownership bit is flipped
+/// such that the hardware now "owns" the descriptor.
+/// Processing means sending a packet for TX, or the reception of a packet for RX.
+///
+/// When the hardware owns the descriptor, we may not touch it whatsoever.
+/// As such, this interface offers no way to retrieve hardware-owned descriptors.
+///
+/// When a descriptor is finished processing, hardware will turn off the ownership
+/// bit, handing ownership back to us. At this point, we can take the buffer out of
+/// the descriptor and process or free it.
+pub struct Ring<S: RingType, const N: usize> {
+    _ring_type: PhantomData<S>,
 
     /// A contiguous array of hardware descriptors. The hardware will receive a pointer to this.
-    descriptors: [HwDescriptor; N],
+    /// This _assumes_ that the MMU is disabled, and `va == pa`.
+    hw_descriptors: Box<[HwDescriptor; N]>,
 
-    /// Index of first busy buffer (or represents no busy buffers if equivalent to `avail`)
-    busy: usize,
-    /// Index of first free buffer
-    avail: usize,
+    /// Associated logical descriptors, tracking extra information that can't live inside
+    /// of the hardware descriptors.
+    descriptors: [LogicalDescriptor; N],
+
+    /// The next busy descriptor, without wraparound.
+    next_busy: usize,
+    /// The next free descriptor, without wraparound. If `next_free` == `next_busy`, all descriptors are free.
+    next_free: usize,
 }
 
-impl<T: RingType, const N: usize> Ring<T, N> {
-    fn new() -> Self {
-        let mut descriptors = [HwDescriptor::new(); N];
-        descriptors.last_mut().unwrap().capacity = super::HWDESC_LAST_ENTRY;
+impl<S: RingType, const N: usize> Ring<S, N> {
+    /// Construct a new ethernet ring, with an allocation backed by the global allocator.
+    pub fn new() -> Self {
+        let mut hw_descriptors = Box::new([HwDescriptor::new(); N]);
+        hw_descriptors.last_mut().unwrap().capacity = super::HWDESC_CAP_LAST_ENTRY;
+
+        const LOGDESC_INIT: LogicalDescriptor = LogicalDescriptor { buf: None };
 
         Self {
-            ring_type: PhantomData,
-            descriptors: [HwDescriptor::new(); N],
+            _ring_type: PhantomData,
+            hw_descriptors,
+            descriptors: [LOGDESC_INIT; N],
 
-            busy: 0,
-            avail: 0,
+            next_busy: 0,
+            next_free: 0,
         }
     }
 
-    pub fn new_rx(buffers: [EthernetBuffer; N]) -> Self {
-        let mut obj = Ring::new();
+    /// Retrieve the next unused descriptor, if any.
+    pub fn get_next_free<'ring>(&'ring mut self) -> Option<FreeDescriptor<'ring, S, N>> {
+        // If `next_free` is >= `N` slots away from `next_busy`,
+        // the entire ring has been consumed.
+        if self.next_free - self.next_busy >= N {
+            None
+        } else {
+            // N.B: Do not increment `next_free` here. The descriptor must do that when submitted.
+            // Because of the mutable borrow against `self`, callers cannot fetch more than
+            // one descriptor at a time.
+            let idx = self.next_free % N;
 
-        for (mut desc, buf) in core::iter::zip(obj.descriptors, buffers) {
-            desc.addr = buf.0.as_mut_ptr() as u32;
+            Some(FreeDescriptor { ring: self, idx })
+        }
+    }
+
+    /// Retrieve the next completed descriptor, if any.
+    pub fn get_next_complete(&mut self) -> Option<CompleteDescriptor<'_, S, N>> {
+        if self.next_busy == self.next_free {
+            None
+        } else {
+            let idx = self.next_busy % N;
+
+            // Now, we need to check and see if the HW ownership bit if set.
+            // If so, do not return a reference.
+            if self.hw_descriptors[idx].is_busy() {
+                None
+            } else {
+                Some(CompleteDescriptor { ring: self, idx })
+            }
+        }
+    }
+}
+
+unsafe fn read_mod_write_volatile<T>(addr: *mut T, func: impl FnOnce(T) -> T) {
+    let oval = core::ptr::read_volatile(addr);
+    let nval = func(oval);
+    core::ptr::write_volatile(addr, nval);
+}
+
+/// Represents a safe interface for a particular free hardware descriptor.
+pub struct FreeDescriptor<'a, S: RingType, const N: usize> {
+    /// The ring that owns this descriptor.
+    ring: &'a mut Ring<S, N>,
+    /// The wrapped-around descriptor index.
+    idx: usize,
+}
+
+// Actions corresponding to a free descriptor on the RX ring.
+impl<'a, const N: usize> FreeDescriptor<'a, RxRing, N> {
+    /// Submit this descriptor to hardware.
+    pub fn submit(self, buf: Box<EthernetBuffer>) {
+        // Update the hardware descriptor.
+        let hw_desc = &mut self.ring.hw_descriptors[self.idx];
+        unsafe {
+            core::ptr::write_volatile(&mut hw_desc.len, 0); // RX: 0 bytes initial length
+            core::ptr::write_volatile(&mut hw_desc.addr, buf.0.as_ptr() as u32);
+
+            read_mod_write_volatile(&mut hw_desc.capacity, |v| {
+                // N.B: Avoid overwriting HWDESC_CAP_LAST_ENTRY.
+                (v & super::HWDESC_CAP_LAST_ENTRY) | (buf.0.len() as u32 & 0x7FFF_FFFF)
+            });
+
+            // Prevent reordering of the above writes and the below ownership flag modification.
+            core::sync::atomic::fence(Ordering::SeqCst);
+
+            // TODO: Figure out what magic bit 0x4000_0000 is.
+            core::ptr::write_volatile(
+                &mut hw_desc.flags,
+                super::HWDESC_FLAG_HW_OWNED | 0x4000_0000,
+            );
         }
 
-        obj
+        self.ring.next_free += 1;
+    }
+}
+
+// Actions corresponding to a free descriptor on the TX ring.
+impl<'a, const N: usize> FreeDescriptor<'a, TxRing, N> {
+    /// Submit this descriptor to hardware.
+    pub fn submit(self, buf: Box<EthernetBuffer>, len: usize) {
+        // Update the hardware descriptor.
+        let hw_desc = &mut self.ring.hw_descriptors[self.idx];
+        unsafe {
+            core::ptr::write_volatile(&mut hw_desc.len, len as u32);
+            core::ptr::write_volatile(&mut hw_desc.addr, buf.0.as_ptr() as u32);
+
+            read_mod_write_volatile(&mut hw_desc.capacity, |v| {
+                // N.B: Avoid overwriting HWDESC_CAP_LAST_ENTRY.
+                (v & super::HWDESC_CAP_LAST_ENTRY) | (buf.0.len() as u32 & 0x7FFF_FFFF)
+            });
+
+            // Prevent reordering of the above writes and the below ownership flag modification.
+            core::sync::atomic::fence(Ordering::SeqCst);
+
+            // TODO: Figure out the magic bits 0x4023_0000.
+            core::ptr::write_volatile(
+                &mut hw_desc.flags,
+                super::HWDESC_FLAG_HW_OWNED | 0x4023_0000,
+            );
+        }
+
+        // Update the logical descriptor.
+        self.ring.descriptors[self.idx].buf.replace(buf);
+        self.ring.next_free += 1;
+    }
+}
+
+/// Represents a safe interface for a particular completed hardware descriptor.
+pub struct CompleteDescriptor<'a, S: RingType, const N: usize> {
+    ring: &'a mut Ring<S, N>,
+    idx: usize,
+}
+
+impl<'a, S: RingType, const N: usize> CompleteDescriptor<'a, S, N> {
+    // take() function for contained buffer
+    //   -> tx, caller takes buffer and frees or reuses
+    //   -> rx, caller submits packet to netstack and (typically) reuses buffer
+    // submit() to transfer this descriptor to HW for processing
+
+    /// Mark a previously finished descriptor as free, taking the buffer out of it.
+    /// This returns a tuple of the buffer and the length used by hardware.
+    pub fn free(self) -> (Box<EthernetBuffer>, usize) {
+        // Clear out the descriptor.
+        let hw_desc = &mut self.ring.hw_descriptors[self.idx];
+        let len = unsafe {
+            core::ptr::write_volatile(&mut hw_desc.addr, 0x0BADF00D);
+            core::ptr::read_volatile(&hw_desc.len)
+        };
+
+        // Take the buffer from the logical descriptor.
+        let buf = self.ring.descriptors[self.idx]
+            .buf
+            .take()
+            .expect("no buffer in completed descriptor");
+
+        self.ring.next_busy += 1;
+        (buf, len as usize)
     }
 }
 
 /// This implements methods specific to an RX descriptor ring.
 impl<const N: usize> Ring<RxRing, N> {
-    /// Attempt to consume a descriptor and swap its buffer with
-    /// the input buffer.
-    pub fn consume() -> EthernetBuffer {}
+    // ref empty descriptors
+    //   -> fill with memory buffers
+    // ref completed descriptors
+    //   -> take and maybe replace packet buffer
+    // no ref of hardware-owned descriptors
 }
 
 /// This implements methods specific to a TX descriptor ring.
 impl<const N: usize> Ring<TxRing, N> {
-    pub fn transmit_buffer(buffer: EthernetBuffer) -> Result<(), EthernetBuffer> {
-        // TODO:
-        // Attempt to find a free descriptor, or error out if none are free.
-        Ok(())
-    }
+    // ref empty descriptors
+    //   -> put buffer into ring for future tx
+    // ref completed descriptors
+    //   -> take buffer and free to heap (or reuse)
+    // no ref of hardware-owned descriptors
 }
