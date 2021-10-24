@@ -2,6 +2,9 @@
 [build]
 target = "powerpc64.json"
 
+[unstable]
+build-std = ["core", "alloc"]
+
 [profile.release]
 incremental = false
 opt-level = "z"
