@@ -197,11 +197,6 @@ pub struct CompleteDescriptor<'a, S: RingType, const N: usize> {
 }
 
 impl<'a, S: RingType, const N: usize> CompleteDescriptor<'a, S, N> {
-    // take() function for contained buffer
-    //   -> tx, caller takes buffer and frees or reuses
-    //   -> rx, caller submits packet to netstack and (typically) reuses buffer
-    // submit() to transfer this descriptor to HW for processing
-
     /// Mark a previously finished descriptor as free, taking the buffer out of it.
     /// This returns a tuple of the buffer and the length used by hardware.
     pub fn free(self) -> (Box<EthernetBuffer>, usize) {
@@ -221,22 +216,4 @@ impl<'a, S: RingType, const N: usize> CompleteDescriptor<'a, S, N> {
         self.ring.next_busy += 1;
         (buf, len as usize)
     }
-}
-
-/// This implements methods specific to an RX descriptor ring.
-impl<const N: usize> Ring<RxRing, N> {
-    // ref empty descriptors
-    //   -> fill with memory buffers
-    // ref completed descriptors
-    //   -> take and maybe replace packet buffer
-    // no ref of hardware-owned descriptors
-}
-
-/// This implements methods specific to a TX descriptor ring.
-impl<const N: usize> Ring<TxRing, N> {
-    // ref empty descriptors
-    //   -> put buffer into ring for future tx
-    // ref completed descriptors
-    //   -> take buffer and free to heap (or reuse)
-    // no ref of hardware-owned descriptors
 }
