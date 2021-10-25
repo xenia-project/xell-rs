@@ -67,7 +67,7 @@ pub struct Ring<S: RingType, const N: usize> {
 impl<S: RingType, const N: usize> Ring<S, N> {
     /// Construct a new ethernet ring, with an allocation backed by the global allocator.
     pub fn new() -> Self {
-        let mut hw_descriptors = Box::new([HwDescriptor::new(); N]);
+        let mut hw_descriptors = Box::new([HwDescriptor::default(); N]);
         hw_descriptors.last_mut().unwrap().capacity = super::HWDESC_CAP_LAST_ENTRY;
 
         const LOGDESC_INIT: LogicalDescriptor = LogicalDescriptor { buf: None };
@@ -80,6 +80,11 @@ impl<S: RingType, const N: usize> Ring<S, N> {
             next_busy: 0,
             next_free: 0,
         }
+    }
+
+    pub fn reset(&mut self) {
+        self.next_busy = 0;
+        self.next_free = 0;
     }
 
     /// Retrieve the next unused descriptor, if any.

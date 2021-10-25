@@ -108,6 +108,17 @@ impl HwDescriptor {
     }
 }
 
+impl Default for HwDescriptor {
+    fn default() -> Self {
+        Self {
+            len: 0x0000_0000,
+            flags: 0x0000_0000,
+            addr: 0x0BAD_F00D,
+            capacity: 0x0000_0000,
+        }
+    }
+}
+
 #[repr(align(16))]
 pub struct EthernetDevice<const N: usize, const M: usize> {
     mmio: core::ptr::NonNull<u8>,
@@ -178,7 +189,7 @@ impl<const N: usize, const M: usize> EthernetDevice<N, M> {
         // Write out the TX descriptor ring base 0.
         self.write(Register::TxConfig, 0x0000_1C00);
         self.write(Register::TxDescriptorBase, self.tx_ring.phys_base() as u32);
-        
+
         // Write out the TX descriptor ring base 1.
         // FIXME: The originating implementation was hacked together. Why do they use the same ring twice?
         self.write(Register::TxConfig, 0x0001_1C00);
