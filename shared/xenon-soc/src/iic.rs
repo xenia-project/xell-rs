@@ -19,7 +19,7 @@ enum Register {
 
 #[repr(u8)]
 #[allow(dead_code)]
-#[derive(ufmt::derive::uDebug)]
+#[derive(Debug)]
 pub enum Interrupt {
     Ipi4 = 2,
     Ipi3 = 4,

@@ -8,5 +8,3 @@ edition = "2018"
 [dependencies]
 xenon-cpu = { path = "../xenon-cpu" }
 sync = { path = "../sync" }
-
-ufmt = "0.1.0"
