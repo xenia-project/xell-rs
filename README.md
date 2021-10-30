@@ -13,3 +13,9 @@ Currently this project is a huge WIP and can't do much, but eventually this can 
    * xenon-cpu: Xenon-specific CPU intrinsics
    * xenon-enet: Xenon fast ethernet driver
    * xenon-soc: Drivers for Xenon SoC functionality
+
+# License
+Licensed under either of
+* Apache License, Version 2.0 (https://www.apache.org/licenses/LICENSE-2.0)
+* MIT license (https://opensource.org/licenses/MIT)
+at your option.
